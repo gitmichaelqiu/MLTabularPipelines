@@ -119,7 +119,7 @@ def tune_xgb_hyperparameters(train_df, features, target_col, task='classificatio
     print("Best XGBoost Trial:", study.best_trial.params)
     return study.best_trial.params
 
-def tune_lgb_hyperparameters(train_df, features, target_col, task='classification', n_trials=20):
+def tune_lgb_hyperparameters(train_df, features, target_col, task='classification', n_trials=20, boosting_type='gbdt'):
     """
     Optuna Hyperparameter tuning for LightGBM.
     """
@@ -130,7 +130,8 @@ def tune_lgb_hyperparameters(train_df, features, target_col, task='classificatio
             'max_depth': trial.suggest_int('max_depth', 3, 10),
             'num_leaves': trial.suggest_int('num_leaves', 20, 150),
             'subsample': trial.suggest_float('subsample', 0.5, 1.0),
-            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0)
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+            'boosting_type': boosting_type
         }
         
         # Quick Evaluation using a simple train_test_split (or 3-fold CV for speed)
