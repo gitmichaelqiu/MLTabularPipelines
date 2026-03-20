@@ -8,7 +8,7 @@ from mltabpipe.common import (
     roc_auc_score, get_eval_score
 )
 
-def train_cv_model(
+def train_gbdt_model(
     train_df: pd.DataFrame, 
     test_df: pd.DataFrame, 
     features: list, 
