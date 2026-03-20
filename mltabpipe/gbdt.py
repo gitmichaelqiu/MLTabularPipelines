@@ -40,7 +40,7 @@ def train_cv_model(
         X_train, y_train = train_df.iloc[train_idx][features], train_df.iloc[train_idx][target_col]
         X_val, y_val = train_df.iloc[val_idx][features], train_df.iloc[val_idx][target_col]
         
-        if model_name == 'lgb':
+        if model_name == 'lgbm':
             if task == 'classification':
                 model = lgb.LGBMClassifier(**params, random_state=random_state, verbosity=-1)
             else:
@@ -59,7 +59,7 @@ def train_cv_model(
             val_preds = model.predict_proba(X_val)[:, 1] if task == 'classification' else model.predict(X_val)
             test_fold_preds = model.predict_proba(test_df[features])[:, 1] if task == 'classification' else model.predict(test_df[features])
             
-        elif model_name == 'cat':
+        elif model_name == 'cb':
             cat_features = X_train.select_dtypes(include=['category']).columns.tolist()
             train_pool = Pool(X_train, y_train, cat_features=cat_features)
             val_pool = Pool(X_val, y_val, cat_features=cat_features)
@@ -119,7 +119,7 @@ def tune_xgb_hyperparameters(train_df, features, target_col, task='classificatio
     print("Best XGBoost Trial:", study.best_trial.params)
     return study.best_trial.params
 
-def tune_lgb_hyperparameters(train_df, features, target_col, task='classification', n_trials=20, boosting_type='gbdt'):
+def tune_lgbm_hyperparameters(train_df, features, target_col, task='classification', n_trials=20, boosting_type='gbdt'):
     """
     Optuna Hyperparameter tuning for LightGBM.
     """
@@ -158,7 +158,7 @@ def tune_lgb_hyperparameters(train_df, features, target_col, task='classificatio
     print("Best LightGBM Trial:", study.best_trial.params)
     return study.best_trial.params
 
-def tune_cat_hyperparameters(train_df, features, target_col, task='classification', n_trials=20):
+def tune_cb_hyperparameters(train_df, features, target_col, task='classification', n_trials=20):
     def objective(trial):
         params = {
             'iterations': trial.suggest_int('iterations', 100, 1000),
