@@ -15,10 +15,10 @@ def train_ydf_model(
     params: dict = None, 
     task: str = 'classification',
     n_folds: int = 5, 
-    random_state: int = 42
+    random_states: list = [42]
 ):
     """
-    Trains a Yggdrasil Decision Forests (YDF) Gradient Boosted Trees model.
+    Trains a Yggdrasil Decision Forests (YDF) Gradient Boosted Trees model with Seed Ensembling.
     YDF handles categorical variables and missing values natively.
     """
     if params is None:
@@ -31,7 +31,10 @@ def train_ydf_model(
             'num_trees': 10000,
         }
         
-    print(f"--- Training YDF Model ({task}) ---")
+    if isinstance(random_states, int):
+        random_states = [random_states]
+
+    print(f"--- Training YDF Model ({task}) with {len(random_states)} seeds ---")
     
     # Suppress verbose YDF C++ engine outputs for a clean notebook
     try:
@@ -50,47 +53,51 @@ def train_ydf_model(
     
     oof_preds = np.zeros(len(train_df), dtype=np.float32)
     test_preds = np.zeros(len(test_df), dtype=np.float32)
-    metrics = []
+    all_metrics = []
     
-    if task == 'classification':
-        kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
-    else:
-        kf = KFold(n_splits=n_folds, shuffle=True, random_state=random_state)
-        
     # YDF expects the label column to be inside the DataFrame during training
     train_cols = features + [target_col]
     test_df_feats = test_df[features].copy()
-    
-    for fold, (tr_idx, va_idx) in enumerate(kf.split(train_df[features], train_df[target_col])):
-        fold_t0 = time.time()
-        print(f"Fold {fold + 1}/{n_folds}")
-        
-        # Slicing the dataframes for this fold
-        tr_df = train_df.iloc[tr_idx][train_cols]
-        va_df = train_df.iloc[va_idx][train_cols]
-        y_va = train_df.iloc[va_idx][target_col]
-        
-        # Initialize and Train
-        learner = ydf.GradientBoostedTreesLearner(**learner_params)
-        model = learner.train(tr_df, valid=va_df) 
-        
-        # For classification, YDF predict() returns 1D array of positive class probabilities natively
-        val_preds = model.predict(va_df[features])
-        test_fold_preds = model.predict(test_df_feats)
-        
-        oof_preds[va_idx] = val_preds
-        test_preds += test_fold_preds / n_folds
-        
-        # Calculate metric
-        fold_score = get_eval_score(y_va, val_preds, task)
-        metrics.append(fold_score)
-        
-        metric_name = "ROC AUC" if task == 'classification' else "RMSE"
-        print(f"Fold {fold + 1} {metric_name}: {fold_score:.5f} | Time: {time.time()-fold_t0:.1f}s")
+
+    for seed in random_states:
+        print(f"Seed {seed}")
+        if task == 'classification':
+            kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        else:
+            kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+            
+        for fold, (tr_idx, va_idx) in enumerate(kf.split(train_df[features], train_df[target_col])):
+            fold_t0 = time.time()
+            print(f"Fold {fold + 1}/{n_folds}")
+            
+            # Slicing the dataframes for this fold
+            tr_df = train_df.iloc[tr_idx][train_cols]
+            va_df = train_df.iloc[va_idx][train_cols]
+            y_va = train_df.iloc[va_idx][target_col]
+            
+            # Initialize and Train
+            lp = learner_params.copy()
+            lp['random_state'] = seed
+            learner = ydf.GradientBoostedTreesLearner(**lp)
+            model = learner.train(tr_df, valid=va_df) 
+            
+            # For classification, YDF predict() returns 1D array of positive class probabilities natively
+            val_preds = model.predict(va_df[features])
+            test_fold_preds = model.predict(test_df_feats)
+            
+            oof_preds[va_idx] += val_preds / len(random_states)
+            test_preds += (test_fold_preds / n_folds) / len(random_states)
+            
+            # Calculate metric
+            fold_score = get_eval_score(y_va, val_preds, task)
+            all_metrics.append(fold_score)
+            
+            metric_name = "ROC AUC" if task == 'classification' else "RMSE"
+            print(f"Fold {fold + 1} {metric_name}: {fold_score:.5f} | Time: {time.time()-fold_t0:.1f}s")
         
     overall_score = get_eval_score(train_df[target_col], oof_preds, task)
     metric_name = "ROC AUC" if task == 'classification' else "RMSE"
-    print(f"Overall OOF {metric_name}: {overall_score:.5f}")
+    print(f"Overall OOF {metric_name} (Ensembled): {overall_score:.5f}")
     print("-" * 30)
     
-    return oof_preds, test_preds, metrics
+    return oof_preds, test_preds, all_metrics

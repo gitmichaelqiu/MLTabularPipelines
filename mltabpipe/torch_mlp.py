@@ -95,69 +95,83 @@ class SmoothBCE(nn.Module):
     def forward(self, logits, targets):
         return nn.functional.binary_cross_entropy_with_logits(logits, targets * (1 - self.eps) + 0.5 * self.eps)
 
-def train_pytorch_mlp_model(train_df, test_df, num_features, cat_features, target_col, params=None, n_folds=5, random_state=42):
+def train_pytorch_mlp_model(train_df, test_df, num_features, cat_features, target_col, params=None, n_folds=5, random_states=[42]):
     if params is None:
         params = {'epochs': 10, 'batch_size': 256, 'lr': 2.5e-5, 'patience': 10, 'weight_decay': 3e-4, 
                   'emb_dropout': 0.10, 'mlp_dropout': 0.30, 'hidden': (512, 256), 'warmup_epochs': 1, 'rare_min_count': 25}
                   
-    print(f"--- Training PyTorch MLP Model ---")
+    if isinstance(random_states, int):
+        random_states = [random_states]
+
+    print(f"--- Training PyTorch MLP Model with {len(random_states)} seeds ---")
     y = train_df[target_col].values.astype(np.float32)
-    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
-    oof_preds, test_preds, metrics = np.zeros(len(train_df), dtype=np.float32), np.zeros(len(test_df), dtype=np.float32), []
     
-    for fold, (tr_idx, va_idx) in enumerate(skf.split(np.zeros(len(train_df)), y)):
-        print(f"\nFold {fold + 1}/{n_folds}")
-        fold_t0 = time.time()
+    oof_preds = np.zeros(len(train_df), dtype=np.float32)
+    test_preds = np.zeros(len(test_df), dtype=np.float32)
+    all_metrics = []
+
+    for seed in random_states:
+        print(f"Seed {seed}")
+        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
         
-        tr_df, va_df = train_df.iloc[tr_idx].reset_index(drop=True), train_df.iloc[va_idx].reset_index(drop=True)
-        tr_cat_df, va_cat_df, te_cat_df = tr_df[cat_features].copy(), va_df[cat_features].copy(), test_df[cat_features].copy()
-        
-        for col in num_features:
-            snapper = build_numeric_snapper(tr_df[col], params['rare_min_count'])
-            tr_cat_df[f"{col}__cat"], tr_cat_df[f"{col}__is_rare"] = [v.astype(str) for v in snapper(tr_df[col])]
-            va_cat_df[f"{col}__cat"], va_cat_df[f"{col}__is_rare"] = [v.astype(str) for v in snapper(va_df[col])]
-            te_cat_df[f"{col}__cat"], te_cat_df[f"{col}__is_rare"] = [v.astype(str) for v in snapper(test_df[col])]
-
-        CAT_ALL = list(tr_cat_df.columns)
-        maps, sizes = make_vocab_maps(tr_cat_df, CAT_ALL)
-        Xc_tr, Xc_va, Xc_te = encode_with_maps(tr_cat_df, CAT_ALL, maps), encode_with_maps(va_cat_df, CAT_ALL, maps), encode_with_maps(te_cat_df, CAT_ALL, maps)
-
-        scaler = StandardScaler()
-        Xn_tr = scaler.fit_transform(tr_df[num_features].astype(np.float32)).astype(np.float32)
-        Xn_va, Xn_te = scaler.transform(va_df[num_features].astype(np.float32)).astype(np.float32), scaler.transform(test_df[num_features].astype(np.float32)).astype(np.float32)
-
-        y_tr, y_va = y[tr_idx], y[va_idx]
-        model = EmbMLP_Mixed([sizes[c] for c in CAT_ALL], Xn_tr.shape[1], params['hidden'], params['emb_dropout'], params['mlp_dropout']).to(DEVICE)
-        opt, loss_fn = torch.optim.AdamW(model.parameters(), lr=params['lr'], weight_decay=params['weight_decay']), SmoothBCE(0.02)
-        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, params['epochs'] - params['warmup_epochs']), eta_min=params['lr'] * 0.05)
-
-        dl_tr = DataLoader(TabMixDataset(Xc_tr, Xn_tr, y_tr), batch_size=params['batch_size'], shuffle=True)
-        dl_va = DataLoader(TabMixDataset(Xc_va, Xn_va, y_va), batch_size=params['batch_size'], shuffle=False)
-        dl_te = DataLoader(TabMixDataset(Xc_te, Xn_te), batch_size=params['batch_size'], shuffle=False)
-
-        best_auc, best_state, bad = -1.0, None, 0
-
-        for epoch in range(1, params['epochs'] + 1):
-            model.train()
-            if epoch <= params['warmup_epochs']:
-                for pg in opt.param_groups: pg["lr"] = params['lr'] * (0.1 + 0.9 * (epoch / params['warmup_epochs']))
-            for xc, xn, yb in dl_tr:
-                opt.zero_grad(set_to_none=True)
-                loss_fn(model(xc.to(DEVICE), xn.to(DEVICE)), yb.to(DEVICE)).backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                opt.step()
-            if epoch > params['warmup_epochs']: sched.step()
+        for fold, (tr_idx, va_idx) in enumerate(skf.split(np.zeros(len(train_df)), y)):
+            print(f"Fold {fold + 1}/{n_folds}")
+            fold_t0 = time.time()
             
-            auc = roc_auc_score(y_va, pytorch_predict_proba(model, dl_va))
-            if auc > best_auc + 1e-6:
-                best_auc, bad, best_state = auc, 0, {k: v.cpu().clone() for k, v in model.state_dict().items()}
-            elif (bad := bad + 1) >= params['patience']: break
+            tr_df, va_df = train_df.iloc[tr_idx].reset_index(drop=True), train_df.iloc[va_idx].reset_index(drop=True)
+            tr_cat_df, va_cat_df, te_cat_df = tr_df[cat_features].copy(), va_df[cat_features].copy(), test_df[cat_features].copy()
+            
+            for col in num_features:
+                snapper = build_numeric_snapper(tr_df[col], params['rare_min_count'])
+                tr_cat_df[f"{col}__cat"], tr_cat_df[f"{col}__is_rare"] = [v.astype(str) for v in snapper(tr_df[col])]
+                va_cat_df[f"{col}__cat"], va_cat_df[f"{col}__is_rare"] = [v.astype(str) for v in snapper(va_df[col])]
+                te_cat_df[f"{col}__cat"], te_cat_df[f"{col}__is_rare"] = [v.astype(str) for v in snapper(test_df[col])]
 
-        if best_state: model.load_state_dict(best_state)
-        metrics.append(best_auc)
-        oof_preds[va_idx] = pytorch_predict_proba(model, dl_va)
-        test_preds += pytorch_predict_proba(model, dl_te) / n_folds
-        print(f"Fold {fold + 1} Best AUC: {best_auc:.6f} | Time: {time.time()-fold_t0:.1f}s")
+            CAT_ALL = list(tr_cat_df.columns)
+            maps, sizes = make_vocab_maps(tr_cat_df, CAT_ALL)
+            Xc_tr, Xc_va, Xc_te = encode_with_maps(tr_cat_df, CAT_ALL, maps), encode_with_maps(va_cat_df, CAT_ALL, maps), encode_with_maps(te_cat_df, CAT_ALL, maps)
 
-    print(f"Overall OOF ROC AUC: {roc_auc_score(y, oof_preds):.5f}\n" + "-" * 30)
-    return oof_preds, test_preds, metrics
+            scaler = StandardScaler()
+            Xn_tr = scaler.fit_transform(tr_df[num_features].astype(np.float32)).astype(np.float32)
+            Xn_va, Xn_te = scaler.transform(va_df[num_features].astype(np.float32)).astype(np.float32), scaler.transform(test_df[num_features].astype(np.float32)).astype(np.float32)
+
+            y_tr, y_va = y[tr_idx], y[va_idx]
+            model = EmbMLP_Mixed([sizes[c] for c in CAT_ALL], Xn_tr.shape[1], params['hidden'], params['emb_dropout'], params['mlp_dropout']).to(DEVICE)
+            opt, loss_fn = torch.optim.AdamW(model.parameters(), lr=params['lr'], weight_decay=params['weight_decay']), SmoothBCE(0.02)
+            sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, params['epochs'] - params['warmup_epochs']), eta_min=params['lr'] * 0.05)
+
+            dl_tr = DataLoader(TabMixDataset(Xc_tr, Xn_tr, y_tr), batch_size=params['batch_size'], shuffle=True)
+            dl_va = DataLoader(TabMixDataset(Xc_va, Xn_va, y_va), batch_size=params['batch_size'], shuffle=False)
+            dl_te = DataLoader(TabMixDataset(Xc_te, Xn_te), batch_size=params['batch_size'], shuffle=False)
+
+            best_auc, best_state, bad = -1.0, None, 0
+
+            for epoch in range(1, params['epochs'] + 1):
+                model.train()
+                if epoch <= params['warmup_epochs']:
+                    for pg in opt.param_groups: pg["lr"] = params['lr'] * (0.1 + 0.9 * (epoch / params['warmup_epochs']))
+                for xc, xn, yb in dl_tr:
+                    opt.zero_grad(set_to_none=True)
+                    loss_fn(model(xc.to(DEVICE), xn.to(DEVICE)), yb.to(DEVICE)).backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    opt.step()
+                if epoch > params['warmup_epochs']: sched.step()
+                
+                auc = roc_auc_score(y_va, pytorch_predict_proba(model, dl_va))
+                if auc > best_auc + 1e-6:
+                    best_auc, bad, best_state = auc, 0, {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                elif (bad := bad + 1) >= params['patience']: break
+
+            if best_state: model.load_state_dict(best_state)
+            
+            val_preds = pytorch_predict_proba(model, dl_va)
+            test_fold_preds = pytorch_predict_proba(model, dl_te)
+            
+            oof_preds[va_idx] += val_preds / len(random_states)
+            test_preds += (test_fold_preds / n_folds) / len(random_states)
+            
+            all_metrics.append(best_auc)
+            print(f"Fold {fold + 1} Best AUC: {best_auc:.6f} | Time: {time.time()-fold_t0:.1f}s")
+
+    print(f"Overall OOF ROC AUC (Ensembled): {roc_auc_score(y, oof_preds):.5f}\n" + "-" * 30)
+    return oof_preds, test_preds, all_metrics

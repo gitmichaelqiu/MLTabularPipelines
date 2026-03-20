@@ -56,15 +56,18 @@ def make_logit3_features(tr_m, va_m, te_m, eps=1e-5):
 # ============================================================
 # LEVEL 1 MODELS: GPU / CPU PIPELINE
 # ============================================================
-def train_te_logit_model(train_df, test_df, features, target_col, n_folds=5, te_n_folds=5, random_state=42, use_gpu=True):
+def train_te_logit_model(train_df, test_df, features, target_col, n_folds=5, te_n_folds=5, random_states=[42], use_gpu=True):
     """
-    Trains a Logistic Regression model using pairwise Target Encoding.
+    Trains a Logistic Regression model using pairwise Target Encoding with Seed Ensembling.
     Automatically uses GPU if available, otherwise falls back to CPU.
     """
+    if isinstance(random_states, int):
+        random_states = [random_states]
+
     # Check if GPU libraries were successfully imported earlier
     has_gpu = use_gpu and 'cuLogReg' in globals()
     mode = "GPU" if has_gpu else "CPU"
-    print(f"--- Training Pairwise TE Logistic Regression ({mode}) ---")
+    print(f"--- Training Pairwise TE Logistic Regression ({mode}) with {len(random_states)} seeds ---")
     
     # 1. Label Encode
     train_enc, test_enc = label_encode_train_test(train_df, test_df, features)
@@ -88,82 +91,85 @@ def train_te_logit_model(train_df, test_df, features, target_col, n_folds=5, te_
     
     oof_preds = np.zeros(N, dtype=np.float32)
     test_preds = np.zeros(len(test_df), dtype=np.float32)
-    metrics = []
+    all_metrics = []
     
-    kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
-    
-    # 4. Leak-Free Outer CV Loop
-    for fold, (tr_idx, va_idx) in enumerate(kf.split(np.zeros(N), y_all)):
-        print(f"Fold {fold + 1}/{n_folds}")
+    for seed in random_states:
+        print(f"Seed {seed}")
+        kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
         
-        y_tr, y_va = y_all[tr_idx], y_all[va_idx]
-        
-        tr_pair = np.zeros((len(tr_idx), n_pair), dtype=np.float32)
-        va_pair = np.zeros((len(va_idx), n_pair), dtype=np.float32)
-        te_pair = np.zeros((len(test_df), n_pair), dtype=np.float32)
-        
-        if has_gpu:
-            # ---------------- GPU PATH (RAPIDS) ----------------
-            tr_idx_g, va_idx_g = cudf.Series(tr_idx), cudf.Series(va_idx)
-            X_tr_g, X_va_g = X_all_g.take(tr_idx_g), X_all_g.take(va_idx_g)
-            y_tr_g = cudf.Series(y_tr)
+        # 4. Leak-Free Outer CV Loop
+        for fold, (tr_idx, va_idx) in enumerate(kf.split(np.zeros(N), y_all)):
+            print(f"Fold {fold + 1}/{n_folds}")
             
-            te = TargetEncoder(n_folds=te_n_folds, smooth=0, seed=random_state + fold, split_method="random", stat="mean", output_type="cupy")
+            y_tr, y_va = y_all[tr_idx], y_all[va_idx]
             
-            for t, (f1, f2) in enumerate(pair_cols):
-                # We combine strings to create true interaction features
-                inter_tr = X_tr_g[f1].astype(str) + "_" + X_tr_g[f2].astype(str)
-                inter_va = X_va_g[f1].astype(str) + "_" + X_va_g[f2].astype(str)
-                inter_te = X_test_g[f1].astype(str) + "_" + X_test_g[f2].astype(str)
-                
-                tr_oof_cp = te.fit_transform(cudf.DataFrame({'inter': inter_tr}), y_tr_g)
-                tr_pair[:, t] = cp.asnumpy(tr_oof_cp).ravel().astype(np.float32)
-                
-                te.fit(cudf.DataFrame({'inter': inter_tr}), y_tr_g)
-                va_pair[:, t] = cp.asnumpy(te.transform(cudf.DataFrame({'inter': inter_va}))).ravel().astype(np.float32)
-                te_pair[:, t] = cp.asnumpy(te.transform(cudf.DataFrame({'inter': inter_te}))).ravel().astype(np.float32)
-                
-        else:
-            # ---------------- CPU PATH (Scikit-Learn) ----------------
-            # sklearn's TargetEncoder natively handles smoothing and cross-fitting to prevent leaks
-            te = skTargetEncoder(cv=te_n_folds, smooth="auto", random_state=random_state + fold)
+            tr_pair = np.zeros((len(tr_idx), n_pair), dtype=np.float32)
+            va_pair = np.zeros((len(va_idx), n_pair), dtype=np.float32)
+            te_pair = np.zeros((len(test_df), n_pair), dtype=np.float32)
             
-            for t, (f1, f2) in enumerate(pair_cols):
-                # Combine Pandas series for interaction
-                inter_tr = (train_enc.iloc[tr_idx][f1].astype(str) + "_" + train_enc.iloc[tr_idx][f2].astype(str)).values.reshape(-1, 1)
-                inter_va = (train_enc.iloc[va_idx][f1].astype(str) + "_" + train_enc.iloc[va_idx][f2].astype(str)).values.reshape(-1, 1)
-                inter_te = (test_enc[f1].astype(str) + "_" + test_enc[f2].astype(str)).values.reshape(-1, 1)
+            if has_gpu:
+                # ---------------- GPU PATH (RAPIDS) ----------------
+                tr_idx_g, va_idx_g = cudf.Series(tr_idx), cudf.Series(va_idx)
+                X_tr_g, X_va_g = X_all_g.take(tr_idx_g), X_all_g.take(va_idx_g)
+                y_tr_g = cudf.Series(y_tr)
                 
-                tr_pair[:, t] = te.fit_transform(inter_tr, y_tr).ravel().astype(np.float32)
-                va_pair[:, t] = te.transform(inter_va).ravel().astype(np.float32)
-                te_pair[:, t] = te.transform(inter_te).ravel().astype(np.float32)
+                te = TargetEncoder(n_folds=te_n_folds, smooth=0, seed=seed + fold, split_method="random", stat="mean", output_type="cupy")
+                
+                for t, (f1, f2) in enumerate(pair_cols):
+                    # We combine strings to create true interaction features
+                    inter_tr = X_tr_g[f1].astype(str) + "_" + X_tr_g[f2].astype(str)
+                    inter_va = X_va_g[f1].astype(str) + "_" + X_va_g[f2].astype(str)
+                    inter_te = X_test_g[f1].astype(str) + "_" + X_test_g[f2].astype(str)
+                    
+                    tr_oof_cp = te.fit_transform(cudf.DataFrame({'inter': inter_tr}), y_tr_g)
+                    tr_pair[:, t] = cp.asnumpy(tr_oof_cp).ravel().astype(np.float32)
+                    
+                    te.fit(cudf.DataFrame({'inter': inter_tr}), y_tr_g)
+                    va_pair[:, t] = cp.asnumpy(te.transform(cudf.DataFrame({'inter': inter_va}))).ravel().astype(np.float32)
+                    te_pair[:, t] = cp.asnumpy(te.transform(cudf.DataFrame({'inter': inter_te}))).ravel().astype(np.float32)
+                    
+            else:
+                # ---------------- CPU PATH (Scikit-Learn) ----------------
+                # sklearn's TargetEncoder natively handles smoothing and cross-fitting to prevent leaks
+                te = skTargetEncoder(cv=te_n_folds, smooth="auto", random_state=seed + fold)
+                
+                for t, (f1, f2) in enumerate(pair_cols):
+                    # Combine Pandas series for interaction
+                    inter_tr = (train_enc.iloc[tr_idx][f1].astype(str) + "_" + train_enc.iloc[tr_idx][f2].astype(str)).values.reshape(-1, 1)
+                    inter_va = (train_enc.iloc[va_idx][f1].astype(str) + "_" + train_enc.iloc[va_idx][f2].astype(str)).values.reshape(-1, 1)
+                    inter_te = (test_enc[f1].astype(str) + "_" + test_enc[f2].astype(str)).values.reshape(-1, 1)
+                    
+                    tr_pair[:, t] = te.fit_transform(inter_tr, y_tr).ravel().astype(np.float32)
+                    va_pair[:, t] = te.transform(inter_va).ravel().astype(np.float32)
+                    te_pair[:, t] = te.transform(inter_te).ravel().astype(np.float32)
+                
+            # Feature Engineering & Scaling
+            X_tr_raw, X_va_raw, X_te_raw = make_logit3_features(tr_pair, va_pair, te_pair)
             
-        # Feature Engineering & Scaling
-        X_tr_raw, X_va_raw, X_te_raw = make_logit3_features(tr_pair, va_pair, te_pair)
-        
-        scaler = StandardScaler()
-        X_tr = scaler.fit_transform(X_tr_raw).astype(np.float32)
-        X_va = scaler.transform(X_va_raw).astype(np.float32)
-        X_te = scaler.transform(X_te_raw).astype(np.float32)
-        
-        if has_gpu:
-            meta = cuLogReg(penalty="l2", C=0.5, max_iter=4000, tol=1e-4, fit_intercept=True, verbose=0)
-            meta.fit(cp.asarray(X_tr), cp.asarray(y_tr))
-            oof_va = cp.asnumpy(meta.predict_proba(cp.asarray(X_va))[:, 1]).astype(np.float32)
-            test_preds += cp.asnumpy(meta.predict_proba(cp.asarray(X_te))[:, 1]).astype(np.float32) / n_folds
-        else:
-            meta = skLogReg(penalty="l2", C=0.5, max_iter=4000, tol=1e-4, fit_intercept=True)
-            meta.fit(X_tr, y_tr)
-            oof_va = meta.predict_proba(X_va)[:, 1].astype(np.float32)
-            test_preds += meta.predict_proba(X_te)[:, 1].astype(np.float32) / n_folds
-        
-        oof_preds[va_idx] = oof_va
-        
-        fold_auc = roc_auc_score(y_va, oof_va)
-        metrics.append(fold_auc)
-        print(f"Fold {fold + 1} ROC AUC: {fold_auc:.5f}")
+            scaler = StandardScaler()
+            X_tr = scaler.fit_transform(X_tr_raw).astype(np.float32)
+            X_va = scaler.transform(X_va_raw).astype(np.float32)
+            X_te = scaler.transform(X_te_raw).astype(np.float32)
+            
+            if has_gpu:
+                meta = cuLogReg(penalty="l2", C=0.5, max_iter=4000, tol=1e-4, fit_intercept=True, verbose=0)
+                meta.fit(cp.asarray(X_tr), cp.asarray(y_tr))
+                oof_va = cp.asnumpy(meta.predict_proba(cp.asarray(X_va))[:, 1]).astype(np.float32)
+                test_fold_preds = cp.asnumpy(meta.predict_proba(cp.asarray(X_te))[:, 1]).astype(np.float32)
+            else:
+                meta = skLogReg(penalty="l2", C=0.5, max_iter=4000, tol=1e-4, fit_intercept=True)
+                meta.fit(X_tr, y_tr)
+                oof_va = meta.predict_proba(X_va)[:, 1].astype(np.float32)
+                test_fold_preds = meta.predict_proba(X_te)[:, 1].astype(np.float32)
+            
+            oof_preds[va_idx] += oof_va / len(random_states)
+            test_preds += (test_fold_preds / n_folds) / len(random_states)
+            
+            fold_auc = roc_auc_score(y_va, oof_va)
+            all_metrics.append(fold_auc)
+            print(f"Fold {fold + 1} ROC AUC: {fold_auc:.5f}")
 
-    print(f"Overall OOF ROC AUC: {roc_auc_score(y_all, oof_preds):.5f}")
+    print(f"Overall OOF ROC AUC (Ensembled): {roc_auc_score(y_all, oof_preds):.5f}")
     print("-" * 30)
     
-    return oof_preds, test_preds, metrics
+    return oof_preds, test_preds, all_metrics
