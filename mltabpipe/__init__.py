@@ -9,6 +9,11 @@ from .ensemble import (
     train_te_logit_model
 )
 
+from .core.update_checker import check_for_updates
+
+__version__ = "0.1.0"
+check_for_updates(__version__)
+
 from .nn import (
     train_mlp_model,
     train_tabm_model,
@@ -38,5 +43,5 @@ from .model_selection import (
 
 from .automl import (
     train_autogluon_model,
-    train_lightautoml_model
+    train_lama_model
 )
