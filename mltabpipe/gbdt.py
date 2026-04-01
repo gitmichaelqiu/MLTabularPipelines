@@ -1,32 +1,30 @@
 import optuna
 import lightgbm as lgb
 import xgboost as xgb
-from catboost import CatBoostClassifier, Pool
 from mltabpipe.common import (
     pd, np, plt, sns, 
-    StratifiedKFold, train_test_split, 
+    StratifiedKFold, KFold, train_test_split, 
     roc_auc_score, get_eval_score
 )
+from catboost import CatBoostClassifier, CatBoostRegressor, Pool
 
-def train_gbdt_model(
+def train_xgb_model(
     train_df: pd.DataFrame, 
     test_df: pd.DataFrame, 
     features: list, 
     target_col: str, 
-    model_name: str, 
     params: dict, 
     task: str = 'classification',
     n_folds: int = 5, 
     random_states: list = [42]
 ):
     """
-    Trains a machine learning model using Cross Validation with Seed Ensembling.
-    Adapts to either classification or regression tasks.
+    Trains an XGBoost model using Cross Validation with Seed Ensembling.
     """
     if isinstance(random_states, int):
         random_states = [random_states]
 
-    print(f"--- Training {model_name.upper()} Model ({task}) with {len(random_states)} seeds ---")
+    print(f"--- Training XGB Model ({task}) with {len(random_states)} seeds ---")
     
     oof_preds = np.zeros(len(train_df))
     test_preds = np.zeros(len(test_df))
@@ -45,39 +43,134 @@ def train_gbdt_model(
             X_train, y_train = train_df.iloc[train_idx][features], train_df.iloc[train_idx][target_col]
             X_val, y_val = train_df.iloc[val_idx][features], train_df.iloc[val_idx][target_col]
             
-            if model_name == 'lgbm':
-                if task == 'classification':
-                    model = lgb.LGBMClassifier(**params, random_state=seed, verbosity=-1)
-                else:
-                    model = lgb.LGBMRegressor(**params, random_state=seed, verbosity=-1)
-                model.fit(X_train, y_train, eval_set=[(X_val, y_val)], 
-                          callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False)])
-                val_preds = model.predict_proba(X_val)[:, 1] if task == 'classification' else model.predict(X_val)
-                test_fold_preds = model.predict_proba(test_df[features])[:, 1] if task == 'classification' else model.predict(test_df[features])
-                
-            elif model_name == 'xgb':
-                if task == 'classification':
-                    model = xgb.XGBClassifier(**params, random_state=seed, early_stopping_rounds=100, enable_categorical=True)
-                else:
-                    model = xgb.XGBRegressor(**params, random_state=seed, early_stopping_rounds=100, enable_categorical=True)
-                model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
-                val_preds = model.predict_proba(X_val)[:, 1] if task == 'classification' else model.predict(X_val)
-                test_fold_preds = model.predict_proba(test_df[features])[:, 1] if task == 'classification' else model.predict(test_df[features])
-                
-            elif model_name == 'cb':
-                cat_features = X_train.select_dtypes(include=['category']).columns.tolist()
-                train_pool = Pool(X_train, y_train, cat_features=cat_features)
-                val_pool = Pool(X_val, y_val, cat_features=cat_features)
-                if task == 'classification':
-                    model = CatBoostClassifier(**params, random_state=seed, early_stopping_rounds=100, verbose=False)
-                else:
-                    model = CatBoostRegressor(**params, random_state=seed, early_stopping_rounds=100, verbose=False)
-                model.fit(train_pool, eval_set=val_pool)
-                val_preds = model.predict_proba(val_pool)[:, 1] if task == 'classification' else model.predict(val_pool)
-                test_fold_preds = model.predict_proba(test_df[features])[:, 1] if task == 'classification' else model.predict(test_df[features])
-                
+            if task == 'classification':
+                model = xgb.XGBClassifier(**params, random_state=seed, early_stopping_rounds=100, enable_categorical=True)
             else:
-                raise ValueError("Unsupported model_name!")
+                model = xgb.XGBRegressor(**params, random_state=seed, early_stopping_rounds=100, enable_categorical=True)
+            
+            model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+            val_preds = model.predict_proba(X_val)[:, 1] if task == 'classification' else model.predict(X_val)
+            test_fold_preds = model.predict_proba(test_df[features])[:, 1] if task == 'classification' else model.predict(test_df[features])
+                
+            oof_preds[val_idx] += val_preds / len(random_states)
+            test_preds += (test_fold_preds / n_folds) / len(random_states)
+            fold_score = get_eval_score(y_val, val_preds, task)
+            all_metrics.append(fold_score)
+            print(f"Fold {fold + 1} Score: {fold_score:.5f}")
+            
+    overall_score = get_eval_score(train_df[target_col], oof_preds, task)
+    print(f"Overall OOF Score (Ensembled): {overall_score:.5f}")
+    return oof_preds, test_preds, all_metrics
+
+
+def train_lgbm_model(
+    train_df: pd.DataFrame, 
+    test_df: pd.DataFrame, 
+    features: list, 
+    target_col: str, 
+    params: dict, 
+    boosting_type: str = 'gbdt',
+    task: str = 'classification',
+    n_folds: int = 5, 
+    random_states: list = [42]
+):
+    """
+    Trains a LightGBM model using Cross Validation with Seed Ensembling.
+    """
+    if isinstance(random_states, int):
+        random_states = [random_states]
+
+    print(f"--- Training LGBM Model ({task}) with {boosting_type} and {len(random_states)} seeds ---")
+    
+    oof_preds = np.zeros(len(train_df))
+    test_preds = np.zeros(len(test_df))
+    all_metrics = []
+    
+    # Update params with boosting_type
+    params = params.copy()
+    params['boosting_type'] = boosting_type
+    
+    for seed in random_states:
+        print(f"Seed {seed}")
+        if task == 'classification':
+            kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        else:
+            kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+            
+        for fold, (train_idx, val_idx) in enumerate(kf.split(train_df[features], train_df[target_col])):
+            print(f"Fold {fold + 1}/{n_folds}")
+            
+            X_train, y_train = train_df.iloc[train_idx][features], train_df.iloc[train_idx][target_col]
+            X_val, y_val = train_df.iloc[val_idx][features], train_df.iloc[val_idx][target_col]
+            
+            if task == 'classification':
+                model = lgb.LGBMClassifier(**params, random_state=seed, verbosity=-1)
+            else:
+                model = lgb.LGBMRegressor(**params, random_state=seed, verbosity=-1)
+            
+            model.fit(X_train, y_train, eval_set=[(X_val, y_val)], 
+                      callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False)])
+            val_preds = model.predict_proba(X_val)[:, 1] if task == 'classification' else model.predict(X_val)
+            test_fold_preds = model.predict_proba(test_df[features])[:, 1] if task == 'classification' else model.predict(test_df[features])
+                
+            oof_preds[val_idx] += val_preds / len(random_states)
+            test_preds += (test_fold_preds / n_folds) / len(random_states)
+            fold_score = get_eval_score(y_val, val_preds, task)
+            all_metrics.append(fold_score)
+            print(f"Fold {fold + 1} Score: {fold_score:.5f}")
+            
+    overall_score = get_eval_score(train_df[target_col], oof_preds, task)
+    print(f"Overall OOF Score (Ensembled): {overall_score:.5f}")
+    return oof_preds, test_preds, all_metrics
+
+
+def train_cb_model(
+    train_df: pd.DataFrame, 
+    test_df: pd.DataFrame, 
+    features: list, 
+    target_col: str, 
+    params: dict, 
+    task: str = 'classification',
+    n_folds: int = 5, 
+    random_states: list = [42]
+):
+    """
+    Trains a CatBoost model using Cross Validation with Seed Ensembling.
+    """
+    if isinstance(random_states, int):
+        random_states = [random_states]
+
+    print(f"--- Training CB Model ({task}) with {len(random_states)} seeds ---")
+    
+    oof_preds = np.zeros(len(train_df))
+    test_preds = np.zeros(len(test_df))
+    all_metrics = []
+    
+    for seed in random_states:
+        print(f"Seed {seed}")
+        if task == 'classification':
+            kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        else:
+            kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+            
+        for fold, (train_idx, val_idx) in enumerate(kf.split(train_df[features], train_df[target_col])):
+            print(f"Fold {fold + 1}/{n_folds}")
+            
+            X_train, y_train = train_df.iloc[train_idx][features], train_df.iloc[train_idx][target_col]
+            X_val, y_val = train_df.iloc[val_idx][features], train_df.iloc[val_idx][target_col]
+            
+            cat_features = X_train.select_dtypes(include=['category']).columns.tolist()
+            train_pool = Pool(X_train, y_train, cat_features=cat_features)
+            val_pool = Pool(X_val, y_val, cat_features=cat_features)
+            
+            if task == 'classification':
+                model = CatBoostClassifier(**params, random_state=seed, early_stopping_rounds=100, verbose=False)
+            else:
+                model = CatBoostRegressor(**params, random_state=seed, early_stopping_rounds=100, verbose=False)
+            
+            model.fit(train_pool, eval_set=val_pool)
+            val_preds = model.predict_proba(val_pool)[:, 1] if task == 'classification' else model.predict(val_pool)
+            test_fold_preds = model.predict_proba(test_df[features])[:, 1] if task == 'classification' else model.predict(test_df[features])
                 
             oof_preds[val_idx] += val_preds / len(random_states)
             test_preds += (test_fold_preds / n_folds) / len(random_states)
