@@ -10,7 +10,7 @@ except ImportError:
 
 from mltabpipe.core.common import get_eval_score
 
-def train_lightautoml_model(
+def train_lama_model(
     train_df: pd.DataFrame, 
     test_df: pd.DataFrame, 
     target_col: str, 
