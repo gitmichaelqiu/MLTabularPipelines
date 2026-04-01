@@ -19,10 +19,11 @@ def train_autogluon_model(
     task: str = 'classification',
     path: str = 'ag_models',
     presets: str = 'best_quality',
-    time_limit: int = 3600
+    time_limit: int = 3600,
+    overwrite: bool = True
 ):
     """
-    Trains an AutoGluon TabularPredictor.
+    Trains an AutoGluon TabularPredictor with persistence control and dynamic type detection.
     Uses true Out-of-Fold (OOF) predictions for standard scoring.
     """
     if not AUTOGLUON_AVAILABLE:
@@ -30,25 +31,15 @@ def train_autogluon_model(
 
     print(f"--- Training AutoGluon Model ({task}) with presets='{presets}' ---")
     
-    # AutoGluon handles task detection, but we can specify the problem type
-    # binary, multiclass, regression
-    if task == 'classification':
-        # Check if binary or multi
-        n_unique = train_df[target_col].nunique()
-        problem_type = 'binary' if n_unique == 2 else 'multiclass'
-        eval_metric = 'roc_auc' if problem_type == 'binary' else 'log_loss'
-    else:
-        problem_type = 'regression'
-        eval_metric = 'root_mean_squared_error'
-
-    # Remove existing model path to avoid conflicts
-    if os.path.exists(path):
+    # Handle path persistence
+    if overwrite and os.path.exists(path):
+        print(f"Overwriting existing model path: {path}")
         shutil.rmtree(path)
 
+    # Initialize predictor - let AutoGluon infer problem_type and eval_metric by default
+    # but we can still pass hints from the 'task' argument if needed.
     predictor = TabularPredictor(
         label=target_col, 
-        problem_type=problem_type,
-        eval_metric=eval_metric,
         path=path,
         verbosity=2
     ).fit(
@@ -57,23 +48,26 @@ def train_autogluon_model(
         time_limit=time_limit
     )
 
-    # Get True Out-Of-Fold (OOF) predictions
+    # Reliable problem type detection after training
+    problem_type = predictor.problem_type
+    print(f"AutoGluon inferred problem_type: {problem_type}")
+
+    # Extract True Out-Of-Fold (OOF) predictions
     # This requires bagging to be enabled (e.g. presets='best_quality')
     try:
         if problem_type == 'binary':
             # Returns probabilities for the positive class only
             oof_preds = predictor.predict_proba_oof(as_multiclass=False).values
         elif problem_type == 'multiclass':
-            # Returns probabilities for all classes
+            # Returns probabilities for all classes (as NumPy array)
             oof_preds = predictor.predict_proba_oof().values
         else:
-            # For regression
+            # For regression (returns scalar values)
             oof_preds = predictor.predict_oof().values
             
     except Exception as e:
-        # If OOF is not available (e.g. bagging disabled), we raise a clear error to avoid biased scoring.
         error_msg = (
-            f"Failed to extract True OOF predictions from AutoGluon. Error: {e}\n"
+            f"Failed to extract True OOF predictions from AutoGluon (problem_type={problem_type}). Error: {e}\n"
             "This usually happens when bagging (cross-validation) is disabled. "
             "Ensure you are using presets like 'best_quality' or manually enabled bagging."
         )
@@ -86,6 +80,12 @@ def train_autogluon_model(
         test_preds = predictor.predict_proba(test_df).values
     else:
         test_preds = predictor.predict(test_df).values
+
+    # Convert to NumPy if they are still Pandas objects (though .values should have handled it)
+    if isinstance(oof_preds, (pd.Series, pd.DataFrame)):
+        oof_preds = oof_preds.values
+    if isinstance(test_preds, (pd.Series, pd.DataFrame)):
+        test_preds = test_preds.values
 
     # Scoring
     y_true = train_df[target_col].values
