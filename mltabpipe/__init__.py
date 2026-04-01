@@ -35,3 +35,8 @@ from .model_selection import (
     add_pseudo_labels,
     apply_pseudo_labeling_pipeline
 )
+
+from .automl import (
+    train_autogluon_model,
+    train_lightautoml_model
+)
