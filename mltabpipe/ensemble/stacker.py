@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from mltabpipe.common import StratifiedKFold, KFold, roc_auc_score, get_eval_score
+from mltabpipe.core.common import StratifiedKFold, KFold, roc_auc_score, get_eval_score
 
 try:
     import cuml

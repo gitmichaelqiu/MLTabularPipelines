@@ -1,5 +1,5 @@
 import time
-from mltabpipe.common import np, pd, StratifiedKFold, StandardScaler, roc_auc_score
+from mltabpipe.core.common import np, pd, StratifiedKFold, StandardScaler, roc_auc_score
 
 try:
     import torch

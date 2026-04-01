@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
-from mltabpipe.common import StratifiedKFold, KFold, roc_auc_score, get_eval_score, StandardScaler
+from mltabpipe.core.common import StratifiedKFold, KFold, roc_auc_score, get_eval_score, StandardScaler
 
 try:
     import torch_geometric

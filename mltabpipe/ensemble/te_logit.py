@@ -1,4 +1,4 @@
-from mltabpipe.common import (
+from mltabpipe.core.common import (
     pd, np, plt, sns, 
     StratifiedKFold, train_test_split, 
     StandardScaler, roc_auc_score, get_eval_score,

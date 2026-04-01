@@ -4,7 +4,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from mltabpipe.common import StratifiedKFold, KFold, roc_auc_score, get_eval_score
+from mltabpipe.core.common import StratifiedKFold, KFold, roc_auc_score, get_eval_score
 
 try:
     import torch_frame

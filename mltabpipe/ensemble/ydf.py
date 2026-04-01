@@ -1,6 +1,6 @@
 import time
 import warnings
-from mltabpipe.common import np, pd, StratifiedKFold, KFold, get_eval_score
+from mltabpipe.core.common import np, pd, StratifiedKFold, KFold, get_eval_score
 
 try:
     import ydf

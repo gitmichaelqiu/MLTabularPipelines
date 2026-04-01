@@ -5,7 +5,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from scipy.special import expit
 
-from mltabpipe.common import (
+from mltabpipe.core.common import (
     np, pd, StratifiedKFold, KFold, get_eval_score, 
     StandardScaler, OneHotEncoder
 )
