@@ -16,23 +16,32 @@ def train_lightautoml_model(
     target_col: str, 
     task: str = 'classification',
     timeout: int = 3600,
-    cpu_limit: int = 4
+    cpu_limit: int = -1
 ):
     """
     Trains a LightAutoML TabularAutoML model.
-    Standardizes OOF and test predictions.
+    Standardizes OOF and test predictions using robust shaping and label alignment.
     """
     if not LIGHTAUTOML_AVAILABLE:
         raise ImportError("LightAutoML is not installed. Please run 'pip install lightautoml'.")
 
     print(f"--- Training LightAutoML Model ({task}) with timeout={timeout}s ---")
     
+    # Avoid side effects on the original dataframe
+    train_data = train_df.copy()
+    test_data = test_df.copy()
+
     # Define task for LAMA
     if task == 'classification':
-        # Default is binary, check for multi
-        n_unique = train_df[target_col].nunique()
+        n_unique = train_data[target_col].nunique()
         task_name = 'binary' if n_unique == 2 else 'multiclass'
         metric = 'auc' if task_name == 'binary' else 'logloss'
+
+        # Explicitly encode categorical targets to integers to avoid "The Multi Trap" (label mismatch)
+        if not np.issubdtype(train_data[target_col].dtype, np.integer):
+            print(f"Label encoding categorical target: {target_col}")
+            train_data[target_col], labels = pd.factorize(train_data[target_col])
+            # Note: We don't necessarily need to encode test_df's target as it's usually empty/placeholder
     else:
         task_name = 'reg'
         metric = 'rmse'
@@ -40,38 +49,35 @@ def train_lightautoml_model(
     lama_task = Task(name=task_name, metric=metric)
     
     # Initialize LAMA
+    # redundant n_jobs removed from reader_params as it's handled by cpu_limit
     automl = TabularAutoML(
         task=lama_task, 
         timeout=timeout,
         cpu_limit=cpu_limit,
         general_params={'use_algos': [['lgb', 'cb', 'linear_l2']]},
-        reader_params={'n_jobs': cpu_limit, 'cv': 5, 'random_state': 42}
+        reader_params={'cv': 5, 'random_state': 42} 
     )
 
     # Fit and get OOF
-    # LightAutoML roles specify columns. 'target' is required.
     roles = {'target': target_col}
     
     # fit_predict returns OOF predictions (in LAMA's format)
-    # The output is a LAMA predictions object
-    oof_preds_lama = automl.fit_predict(train_df, roles=roles, verbose=1)
+    oof_preds_lama = automl.fit_predict(train_data, roles=roles, verbose=1)
     
     # Convert LAMA predictions to numpy
-    # For binary, it's typically (N, 1) probabilities
-    # For multi, it's (N, K)
-    # For reg, it's (N, 1)
+    # Use .ravel() ensure the array is 1D for binary/regression (prevents batch-size-1 scalar errors)
     oof_preds = oof_preds_lama.data
     if task_name == 'binary' or task_name == 'reg':
-        oof_preds = oof_preds.squeeze()
+        oof_preds = oof_preds.ravel()
     
     # Test predictions
-    test_preds_lama = automl.predict(test_df)
+    test_preds_lama = automl.predict(test_data)
     test_preds = test_preds_lama.data
     if task_name == 'binary' or task_name == 'reg':
-        test_preds = test_preds.squeeze()
+        test_preds = test_preds.ravel()
 
-    # Scoring
-    y_true = train_df[target_col].values
+    # Scoring - ensure we score against the (potentially encoded) target
+    y_true = train_data[target_col].values
     score = get_eval_score(y_true, oof_preds, task)
     print(f"LightAutoML Overall OOF Score: {score:.5f}")
 
