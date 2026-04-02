@@ -27,6 +27,45 @@ except ImportError:
 
 from mltabpipe.core.common import roc_auc_score, get_eval_score
 
+def _get_gpu_params(model_type, user_params=None):
+    """
+    Utility to detect GPU/CUDA availability and provide relevant model parameters.
+    Returns a dictionary of parameters to merge.
+    """
+    if user_params is None:
+        user_params = {}
+    
+    gpu_params = {}
+    
+    if model_type == 'xgb':
+        if xgb is not None:
+            try:
+                from xgboost import device_is_available
+                if device_is_available("cuda"):
+                    if "device" not in user_params and "tree_method" not in user_params:
+                        gpu_params = {"device": "cuda"}
+            except ImportError:
+                pass 
+                
+    elif model_type == 'lgbm':
+        if lgb is not None:
+            if "device" not in user_params:
+                # Force 'gpu' by default, if it fails, fallback to 'cpu' in fit
+                gpu_params = {"device": "gpu"}
+
+    elif model_type == 'cb':
+        if CatBoostClassifier is not None:
+            if "task_type" not in user_params:
+                try:
+                    from catboost.utils import get_gpu_device_count
+                    if get_gpu_device_count() > 0:
+                        gpu_params = {"task_type": "GPU"}
+                except:
+                    pass
+                    
+    return gpu_params
+
+
 def train_xgb_model(
     train_df: pd.DataFrame, 
     test_df: pd.DataFrame, 
@@ -43,6 +82,12 @@ def train_xgb_model(
     """
     if xgb is None:
         raise ImportError("XGBoost is not installed. Please run 'pip install xgboost'.")
+
+    # Detect & apply GPU acceleration if possible
+    gpu_params = _get_gpu_params('xgb', params)
+    final_params = {**params, **gpu_params}
+    if "device" in gpu_params and gpu_params["device"] == "cuda":
+        print(f"  XGBoost: Using GPU acceleration (device='cuda').")
 
     if isinstance(random_states, int):
         random_states = [random_states]
@@ -68,10 +113,7 @@ def train_xgb_model(
     
     for seed in random_states:
         print(f"Seed {seed}")
-        if task == 'classification':
-            kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
-        else:
-            kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed) if task == 'classification' else KFold(n_splits=n_folds, shuffle=True, random_state=seed)
             
         for fold, (train_idx, val_idx) in enumerate(kf.split(train_df[features], train_df[target_col])):
             print(f"Fold {fold + 1}/{n_folds}")
@@ -80,13 +122,13 @@ def train_xgb_model(
             X_val, y_val = train_df.iloc[val_idx][features], train_df.iloc[val_idx][target_col]
             
             if task == 'classification':
-                model = xgb.XGBClassifier(**params, random_state=seed, early_stopping_rounds=100, enable_categorical=True)
+                model = xgb.XGBClassifier(**final_params, random_state=seed, early_stopping_rounds=100, enable_categorical=True)
             else:
-                model = xgb.XGBRegressor(**params, random_state=seed, early_stopping_rounds=100, enable_categorical=True)
+                model = xgb.XGBRegressor(**final_params, random_state=seed, early_stopping_rounds=100, enable_categorical=True)
             
             model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
             
-            # Prediction logic: matrix for multiclass, positive class probability for binary
+            # Prediction logic
             if is_multiclass:
                 val_preds_fold = model.predict_proba(X_val)
                 test_fold_preds = model.predict_proba(test_df[features])
@@ -122,9 +164,18 @@ def train_lgbm_model(
     """
     Trains a LightGBM model using Cross Validation with Seed Ensembling.
     Handles binary and multiclass tasks automatically.
+    Uses GPU by default with automatic CPU fallback if needed.
     """
     if lgb is None:
         raise ImportError("LightGBM is not installed. Please run 'pip install lightgbm'.")
+
+    # Detect & apply GPU acceleration if possible
+    gpu_params = _get_gpu_params('lgbm', params)
+    lgbm_params = {**params, **gpu_params}
+    lgbm_params['boosting_type'] = boosting_type
+    
+    if "device" in gpu_params and gpu_params["device"] == "gpu":
+        print(f"  LightGBM: Attempting GPU acceleration (device='gpu').")
 
     if isinstance(random_states, int):
         random_states = [random_states]
@@ -148,15 +199,9 @@ def train_lgbm_model(
     
     all_metrics = []
     
-    lgbm_params = params.copy()
-    lgbm_params['boosting_type'] = boosting_type
-    
     for seed in random_states:
         print(f"Seed {seed}")
-        if task == 'classification':
-            kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
-        else:
-            kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed) if task == 'classification' else KFold(n_splits=n_folds, shuffle=True, random_state=seed)
             
         for fold, (train_idx, val_idx) in enumerate(kf.split(train_df[features], train_df[target_col])):
             print(f"Fold {fold + 1}/{n_folds}")
@@ -169,8 +214,22 @@ def train_lgbm_model(
             else:
                 model = lgb.LGBMRegressor(**lgbm_params, random_state=seed, verbosity=-1)
             
-            model.fit(X_train, y_train, eval_set=[(X_val, y_val)], 
-                      callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False)])
+            try:
+                model.fit(X_train, y_train, eval_set=[(X_val, y_val)], 
+                          callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False)])
+            except Exception as e:
+                # If GPU failed, fallback to CPU
+                if "device" in lgbm_params and lgbm_params["device"] == "gpu":
+                    print(f"  LightGBM: GPU failed ({str(e)[:50]}...). Falling back to CPU for all remaining folds.")
+                    lgbm_params["device"] = "cpu"
+                    if task == 'classification':
+                        model = lgb.LGBMClassifier(**lgbm_params, random_state=seed, verbosity=-1)
+                    else:
+                        model = lgb.LGBMRegressor(**lgbm_params, random_state=seed, verbosity=-1)
+                    model.fit(X_train, y_train, eval_set=[(X_val, y_val)], 
+                              callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False)])
+                else:
+                    raise e
             
             if is_multiclass:
                 val_preds_fold = model.predict_proba(X_val)
@@ -210,6 +269,12 @@ def train_cb_model(
     if CatBoostClassifier is None:
         raise ImportError("CatBoost is not installed. Please run 'pip install catboost'.")
 
+    # Detect & apply GPU acceleration if possible
+    gpu_params = _get_gpu_params('cb', params)
+    final_params = {**params, **gpu_params}
+    if "task_type" in gpu_params and gpu_params["task_type"] == "GPU":
+        print(f"  CatBoost: Using GPU acceleration (task_type='GPU').")
+
     if isinstance(random_states, int):
         random_states = [random_states]
 
@@ -234,10 +299,7 @@ def train_cb_model(
     
     for seed in random_states:
         print(f"Seed {seed}")
-        if task == 'classification':
-            kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
-        else:
-            kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed) if task == 'classification' else KFold(n_splits=n_folds, shuffle=True, random_state=seed)
             
         for fold, (train_idx, val_idx) in enumerate(kf.split(train_df[features], train_df[target_col])):
             print(f"Fold {fold + 1}/{n_folds}")
@@ -250,9 +312,9 @@ def train_cb_model(
             val_pool = Pool(X_val, y_val, cat_features=cat_features_idx)
             
             if task == 'classification':
-                model = CatBoostClassifier(**params, random_state=seed, early_stopping_rounds=100, verbose=False)
+                model = CatBoostClassifier(**final_params, random_state=seed, early_stopping_rounds=100, verbose=False)
             else:
-                model = CatBoostRegressor(**params, random_state=seed, early_stopping_rounds=100, verbose=False)
+                model = CatBoostRegressor(**final_params, random_state=seed, early_stopping_rounds=100, verbose=False)
             
             model.fit(train_pool, eval_set=val_pool)
             
@@ -286,6 +348,8 @@ def tune_xgb_hyperparameters(train_df, features, target_col, task='classificatio
     if xgb is None:
         raise ImportError("XGBoost is not installed.")
 
+    gpu_params = _get_gpu_params('xgb')
+
     def objective(trial):
         params = {
             'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
@@ -293,7 +357,8 @@ def tune_xgb_hyperparameters(train_df, features, target_col, task='classificatio
             'max_depth': trial.suggest_int('max_depth', 3, 10),
             'subsample': trial.suggest_float('subsample', 0.5, 1.0),
             'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-            'min_child_weight': trial.suggest_int('min_child_weight', 1, 10)
+            'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
+            **gpu_params
         }
         
         X_train, X_val, y_train, y_val = train_test_split(
@@ -307,7 +372,6 @@ def tune_xgb_hyperparameters(train_df, features, target_col, task='classificatio
             
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         
-        # Slicing logic for tuning (needs a scalar result for ROC-AUC if binary)
         n_classes = train_df[target_col].nunique()
         if task == 'classification' and n_classes == 2:
             preds = model.predict_proba(X_val)[:, 1]
@@ -322,8 +386,9 @@ def tune_xgb_hyperparameters(train_df, features, target_col, task='classificatio
     study = optuna.create_study(direction=direction)
     study.optimize(objective, n_trials=n_trials)
     
-    print("Best XGBoost Trial:", study.best_trial.params)
-    return study.best_trial.params
+    best_params = {**study.best_trial.params, **gpu_params}
+    print("Best XGBoost Trial:", best_params)
+    return best_params
 
 def tune_lgbm_hyperparameters(train_df, features, target_col, task='classification', n_trials=20, boosting_type='gbdt'):
     """
@@ -334,6 +399,8 @@ def tune_lgbm_hyperparameters(train_df, features, target_col, task='classificati
     if lgb is None:
         raise ImportError("LightGBM is not installed.")
 
+    gpu_params = _get_gpu_params('lgbm')
+
     def objective(trial):
         params = {
             'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
@@ -342,7 +409,8 @@ def tune_lgbm_hyperparameters(train_df, features, target_col, task='classificati
             'num_leaves': trial.suggest_int('num_leaves', 20, 150),
             'subsample': trial.suggest_float('subsample', 0.5, 1.0),
             'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-            'boosting_type': boosting_type
+            'boosting_type': boosting_type,
+            **gpu_params
         }
         
         X_train, X_val, y_train, y_val = train_test_split(
@@ -354,8 +422,21 @@ def tune_lgbm_hyperparameters(train_df, features, target_col, task='classificati
         else:
             model = lgb.LGBMRegressor(**params, random_state=42, verbosity=-1)
             
-        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], 
-                  callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)])
+        try:
+            model.fit(X_train, y_train, eval_set=[(X_val, y_val)], 
+                      callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)])
+        except Exception as e:
+            if "device" in params and params["device"] == "gpu":
+                print(f"  LightGBM: Tuning GPU failed. Swapping to CPU for remaining trials.")
+                params["device"] = "cpu"
+                if task == 'classification':
+                    model = lgb.LGBMClassifier(**params, random_state=42, verbosity=-1)
+                else:
+                    model = lgb.LGBMRegressor(**params, random_state=42, verbosity=-1)
+                model.fit(X_train, y_train, eval_set=[(X_val, y_val)], 
+                          callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)])
+            else:
+                raise e
         
         n_classes = train_df[target_col].nunique()
         if task == 'classification' and n_classes == 2:
@@ -380,13 +461,16 @@ def tune_cb_hyperparameters(train_df, features, target_col, task='classification
     if CatBoostClassifier is None:
         raise ImportError("CatBoost is not installed.")
 
+    gpu_params = _get_gpu_params('cb')
+
     def objective(trial):
         params = {
             'iterations': trial.suggest_int('iterations', 100, 1000),
             'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
             'depth': trial.suggest_int('depth', 3, 10),
             'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1e-3, 10.0, log=True),
-            'border_count': trial.suggest_int('border_count', 32, 255)
+            'border_count': trial.suggest_int('border_count', 32, 255),
+            **gpu_params
         }
         X_tr, X_vl, y_tr, y_vl = train_test_split(train_df[features], train_df[target_col], test_size=0.2, random_state=42)
         cat_feat = X_tr.select_dtypes(include=['category']).columns.tolist()
@@ -411,5 +495,7 @@ def tune_cb_hyperparameters(train_df, features, target_col, task='classification
     direction = 'maximize' if task == 'classification' else 'minimize'
     study = optuna.create_study(direction=direction)
     study.optimize(objective, n_trials=n_trials)
-    print("Best CatBoost Trial:", study.best_trial.params)
-    return study.best_trial.params
+    
+    best_params = {**study.best_trial.params, **gpu_params}
+    print("Best CatBoost Trial:", best_params)
+    return best_params
