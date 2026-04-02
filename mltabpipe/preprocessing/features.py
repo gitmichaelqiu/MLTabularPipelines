@@ -11,6 +11,7 @@ def add_snap_features(df, original_df, cols):
     if not cols:
         return df
         
+    print(f"--- Snapping features for {len(cols)} columns ---")
     for col in cols:
         if col not in df.columns or col not in original_df.columns:
             continue
@@ -32,8 +33,15 @@ def add_snap_features(df, original_df, cols):
         best_idx = np.where(dist_curr <= dist_prev, idx, idx_prev)
         snap_values = orig_values[best_idx]
         
+        # Count snapped values (rows where the value has been moved)
+        # Using a small epsilon for floating point comparison
+        snapped_mask = np.abs(df[col].values - snap_values) > 1e-9
+        snapped_count = np.sum(snapped_mask)
+        
         df[f"{col}_snap"] = snap_values
         df[f"{col}_snap_diff"] = df[col] - snap_values
+        
+        print(f"  Column '{col}': Snapped {snapped_count} / {len(df)} rows using {len(orig_values)} archetypes.")
         
     return df
 
@@ -46,6 +54,7 @@ def add_digit_features(df, cols):
     if not cols:
         return df
         
+    print(f"--- Extracting digit features for {len(cols)} columns ---")
     for col in cols:
         if col not in df.columns:
             continue
@@ -67,12 +76,12 @@ def add_arithmetic_interactions(df, interactions):
     """
     Apply generic arithmetic interactions.
     'interactions' should be a list of tuples: (col_a, op, col_b, name)
-    Example: [('TotalCharges', '-', 'tenure_x_MC', 'TC_deviation')]
     """
     df = df.copy()
     if not interactions:
         return df
         
+    print(f"--- Creating {len(interactions)} arithmetic interactions ---")
     for col_a, op, col_b, name in interactions:
         if col_a not in df.columns or col_b not in df.columns:
             continue
@@ -96,6 +105,7 @@ def add_binning_features(df, cols, n_bins=1000):
     if not cols:
         return df
         
+    print(f"--- Applying quantile binning ({n_bins}) for {len(cols)} columns ---")
     for col in cols:
         if col not in df.columns:
             continue
@@ -114,6 +124,7 @@ def add_flag_counts(df, cols, flag_value=1, name="flag_count"):
     if not available_cols:
         return df
         
+    print(f"--- Creating flag count '{name}' across {len(available_cols)} columns ---")
     df[name] = (df[available_cols] == flag_value).sum(axis=1)
     return df
 
@@ -122,6 +133,10 @@ def add_frequency_encoding(df, cols):
     Add frequency encoding (normalized counts).
     """
     df = df.copy()
+    if not cols:
+        return df
+        
+    print(f"--- Adding frequency encoding for {len(cols)} columns ---")
     for col in cols:
         if col not in df.columns:
             continue
@@ -134,6 +149,9 @@ def apply_modular_pipeline(df, config, original_df=None):
     Applies the modular pipeline based on a configuration dictionary.
     config keys: 'digit_cols', 'snap_cols', 'interactions', 'binning_configs', 'flag_configs'
     """
+    initial_cols = len(df.columns)
+    print("--- Applying Modular Feature Pipeline ---")
+
     if 'digit_cols' in config:
         df = add_digit_features(df, config['digit_cols'])
         
@@ -151,4 +169,10 @@ def apply_modular_pipeline(df, config, original_df=None):
         for fl_cfg in config['flag_configs']:
             df = add_flag_counts(df, fl_cfg['cols'], fl_cfg.get('value', 1), fl_cfg.get('name', 'count'))
             
+    if 'freq_cols' in config:
+        df = add_frequency_encoding(df, config['freq_cols'])
+        
+    final_cols = len(df.columns)
+    print(f"--- Modular Pipeline Completed. Features: {initial_cols} -> {final_cols} (+{final_cols - initial_cols}) ---")
+
     return df
