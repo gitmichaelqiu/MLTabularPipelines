@@ -39,6 +39,7 @@ def train_xgb_model(
 ):
     """
     Trains an XGBoost model using Cross Validation with Seed Ensembling.
+    Handles binary and multiclass tasks automatically.
     """
     if xgb is None:
         raise ImportError("XGBoost is not installed. Please run 'pip install xgboost'.")
@@ -48,8 +49,19 @@ def train_xgb_model(
 
     print(f"--- Training XGB Model ({task}) with {len(random_states)} seeds ---")
     
-    oof_preds = np.zeros(len(train_df))
-    test_preds = np.zeros(len(test_df))
+    # Detect n_classes
+    n_classes = train_df[target_col].nunique()
+    is_multiclass = (task == 'classification' and n_classes > 2)
+
+    # Initialize OOF and test predictions
+    # Multiclass requires (N, n_classes), binary (N,)
+    if is_multiclass:
+        oof_preds = np.zeros((len(train_df), n_classes))
+        test_preds = np.zeros((len(test_df), n_classes))
+    else:
+        oof_preds = np.zeros(len(train_df))
+        test_preds = np.zeros(len(test_df))
+    
     all_metrics = []
     
     for seed in random_states:
@@ -71,12 +83,21 @@ def train_xgb_model(
                 model = xgb.XGBRegressor(**params, random_state=seed, early_stopping_rounds=100, enable_categorical=True)
             
             model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
-            val_preds = model.predict_proba(X_val)[:, 1] if task == 'classification' else model.predict(X_val)
-            test_fold_preds = model.predict_proba(test_df[features])[:, 1] if task == 'classification' else model.predict(test_df[features])
+            
+            # Prediction logic: matrix for multiclass, positive class probability for binary
+            if is_multiclass:
+                val_preds_fold = model.predict_proba(X_val)
+                test_fold_preds = model.predict_proba(test_df[features])
+            elif task == 'classification':
+                val_preds_fold = model.predict_proba(X_val)[:, 1]
+                test_fold_preds = model.predict_proba(test_df[features])[:, 1]
+            else:
+                val_preds_fold = model.predict(X_val)
+                test_fold_preds = model.predict(test_df[features])
                 
-            oof_preds[val_idx] += val_preds / len(random_states)
+            oof_preds[val_idx] += val_preds_fold / len(random_states)
             test_preds += (test_fold_preds / n_folds) / len(random_states)
-            fold_score = get_eval_score(y_val, val_preds, task)
+            fold_score = get_eval_score(y_val, val_preds_fold, task)
             all_metrics.append(fold_score)
             print(f"Fold {fold + 1} Score: {fold_score:.5f}")
             
@@ -98,6 +119,7 @@ def train_lgbm_model(
 ):
     """
     Trains a LightGBM model using Cross Validation with Seed Ensembling.
+    Handles binary and multiclass tasks automatically.
     """
     if lgb is None:
         raise ImportError("LightGBM is not installed. Please run 'pip install lightgbm'.")
@@ -107,13 +129,20 @@ def train_lgbm_model(
 
     print(f"--- Training LGBM Model ({task}) with {boosting_type} and {len(random_states)} seeds ---")
     
-    oof_preds = np.zeros(len(train_df))
-    test_preds = np.zeros(len(test_df))
+    n_classes = train_df[target_col].nunique()
+    is_multiclass = (task == 'classification' and n_classes > 2)
+
+    if is_multiclass:
+        oof_preds = np.zeros((len(train_df), n_classes))
+        test_preds = np.zeros((len(test_df), n_classes))
+    else:
+        oof_preds = np.zeros(len(train_df))
+        test_preds = np.zeros(len(test_df))
+    
     all_metrics = []
     
-    # Update params with boosting_type
-    params = params.copy()
-    params['boosting_type'] = boosting_type
+    lgbm_params = params.copy()
+    lgbm_params['boosting_type'] = boosting_type
     
     for seed in random_states:
         print(f"Seed {seed}")
@@ -129,18 +158,26 @@ def train_lgbm_model(
             X_val, y_val = train_df.iloc[val_idx][features], train_df.iloc[val_idx][target_col]
             
             if task == 'classification':
-                model = lgb.LGBMClassifier(**params, random_state=seed, verbosity=-1)
+                model = lgb.LGBMClassifier(**lgbm_params, random_state=seed, verbosity=-1)
             else:
-                model = lgb.LGBMRegressor(**params, random_state=seed, verbosity=-1)
+                model = lgb.LGBMRegressor(**lgbm_params, random_state=seed, verbosity=-1)
             
             model.fit(X_train, y_train, eval_set=[(X_val, y_val)], 
                       callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False)])
-            val_preds = model.predict_proba(X_val)[:, 1] if task == 'classification' else model.predict(X_val)
-            test_fold_preds = model.predict_proba(test_df[features])[:, 1] if task == 'classification' else model.predict(test_df[features])
+            
+            if is_multiclass:
+                val_preds_fold = model.predict_proba(X_val)
+                test_fold_preds = model.predict_proba(test_df[features])
+            elif task == 'classification':
+                val_preds_fold = model.predict_proba(X_val)[:, 1]
+                test_fold_preds = model.predict_proba(test_df[features])[:, 1]
+            else:
+                val_preds_fold = model.predict(X_val)
+                test_fold_preds = model.predict(test_df[features])
                 
-            oof_preds[val_idx] += val_preds / len(random_states)
+            oof_preds[val_idx] += val_preds_fold / len(random_states)
             test_preds += (test_fold_preds / n_folds) / len(random_states)
-            fold_score = get_eval_score(y_val, val_preds, task)
+            fold_score = get_eval_score(y_val, val_preds_fold, task)
             all_metrics.append(fold_score)
             print(f"Fold {fold + 1} Score: {fold_score:.5f}")
             
@@ -161,6 +198,7 @@ def train_cb_model(
 ):
     """
     Trains a CatBoost model using Cross Validation with Seed Ensembling.
+    Handles binary and multiclass tasks automatically.
     """
     if CatBoostClassifier is None:
         raise ImportError("CatBoost is not installed. Please run 'pip install catboost'.")
@@ -170,8 +208,16 @@ def train_cb_model(
 
     print(f"--- Training CB Model ({task}) with {len(random_states)} seeds ---")
     
-    oof_preds = np.zeros(len(train_df))
-    test_preds = np.zeros(len(test_df))
+    n_classes = train_df[target_col].nunique()
+    is_multiclass = (task == 'classification' and n_classes > 2)
+
+    if is_multiclass:
+        oof_preds = np.zeros((len(train_df), n_classes))
+        test_preds = np.zeros((len(test_df), n_classes))
+    else:
+        oof_preds = np.zeros(len(train_df))
+        test_preds = np.zeros(len(test_df))
+    
     all_metrics = []
     
     for seed in random_states:
@@ -187,9 +233,9 @@ def train_cb_model(
             X_train, y_train = train_df.iloc[train_idx][features], train_df.iloc[train_idx][target_col]
             X_val, y_val = train_df.iloc[val_idx][features], train_df.iloc[val_idx][target_col]
             
-            cat_features = X_train.select_dtypes(include=['category']).columns.tolist()
-            train_pool = Pool(X_train, y_train, cat_features=cat_features)
-            val_pool = Pool(X_val, y_val, cat_features=cat_features)
+            cat_features_idx = X_train.select_dtypes(include=['category']).columns.tolist()
+            train_pool = Pool(X_train, y_train, cat_features=cat_features_idx)
+            val_pool = Pool(X_val, y_val, cat_features=cat_features_idx)
             
             if task == 'classification':
                 model = CatBoostClassifier(**params, random_state=seed, early_stopping_rounds=100, verbose=False)
@@ -197,12 +243,20 @@ def train_cb_model(
                 model = CatBoostRegressor(**params, random_state=seed, early_stopping_rounds=100, verbose=False)
             
             model.fit(train_pool, eval_set=val_pool)
-            val_preds = model.predict_proba(val_pool)[:, 1] if task == 'classification' else model.predict(val_pool)
-            test_fold_preds = model.predict_proba(test_df[features])[:, 1] if task == 'classification' else model.predict(test_df[features])
+            
+            if is_multiclass:
+                val_preds_fold = model.predict_proba(val_pool)
+                test_fold_preds = model.predict_proba(test_df[features])
+            elif task == 'classification':
+                val_preds_fold = model.predict_proba(val_pool)[:, 1]
+                test_fold_preds = model.predict_proba(test_df[features])[:, 1]
+            else:
+                val_preds_fold = model.predict(val_pool)
+                test_fold_preds = model.predict(test_df[features])
                 
-            oof_preds[val_idx] += val_preds / len(random_states)
+            oof_preds[val_idx] += val_preds_fold / len(random_states)
             test_preds += (test_fold_preds / n_folds) / len(random_states)
-            fold_score = get_eval_score(y_val, val_preds, task)
+            fold_score = get_eval_score(y_val, val_preds_fold, task)
             all_metrics.append(fold_score)
             print(f"Fold {fold + 1} Score: {fold_score:.5f}")
             
@@ -241,7 +295,13 @@ def tune_xgb_hyperparameters(train_df, features, target_col, task='classificatio
             
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
         
-        preds = model.predict_proba(X_val)[:, 1] if task == 'classification' else model.predict(X_val)
+        # Slicing logic for tuning (needs a scalar result for ROC-AUC if binary)
+        n_classes = train_df[target_col].nunique()
+        if task == 'classification' and n_classes == 2:
+            preds = model.predict_proba(X_val)[:, 1]
+        else:
+            preds = model.predict_proba(X_val) if task == 'classification' else model.predict(X_val)
+            
         return get_eval_score(y_val, preds, task)
 
     direction = 'maximize' if task == 'classification' else 'minimize'
@@ -283,7 +343,12 @@ def tune_lgbm_hyperparameters(train_df, features, target_col, task='classificati
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)], 
                   callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)])
         
-        preds = model.predict_proba(X_val)[:, 1] if task == 'classification' else model.predict(X_val)
+        n_classes = train_df[target_col].nunique()
+        if task == 'classification' and n_classes == 2:
+            preds = model.predict_proba(X_val)[:, 1]
+        else:
+            preds = model.predict_proba(X_val) if task == 'classification' else model.predict(X_val)
+            
         return get_eval_score(y_val, preds, task)
 
     direction = 'maximize' if task == 'classification' else 'minimize'
@@ -316,7 +381,13 @@ def tune_cb_hyperparameters(train_df, features, target_col, task='classification
         else:
             model = CatBoostRegressor(**params, random_state=42, early_stopping_rounds=50, verbose=False)
         model.fit(train_pool, eval_set=val_pool)
-        preds = model.predict_proba(val_pool)[:, 1] if task == 'classification' else model.predict(val_pool)
+        
+        n_classes = train_df[target_col].nunique()
+        if task == 'classification' and n_classes == 2:
+            preds = model.predict_proba(val_pool)[:, 1]
+        else:
+            preds = model.predict_proba(val_pool) if task == 'classification' else model.predict(val_pool)
+            
         return get_eval_score(y_vl, preds, task)
 
     direction = 'maximize' if task == 'classification' else 'minimize'
