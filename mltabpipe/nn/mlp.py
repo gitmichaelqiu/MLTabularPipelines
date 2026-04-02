@@ -95,7 +95,7 @@ class SmoothBCE(nn.Module):
     def forward(self, logits, targets):
         return nn.functional.binary_cross_entropy_with_logits(logits, targets * (1 - self.eps) + 0.5 * self.eps)
 
-def train_pytorch_mlp_model(train_df, test_df, num_features, cat_features, target_col, params=None, n_folds=5, random_states=[42]):
+def train_mlp_model(train_df, test_df, num_features, cat_features, target_col, params=None, n_folds=5, random_states=[42]):
     if params is None:
         params = {'epochs': 10, 'batch_size': 256, 'lr': 2.5e-5, 'patience': 10, 'weight_decay': 3e-4, 
                   'emb_dropout': 0.10, 'mlp_dropout': 0.30, 'hidden': (512, 256), 'warmup_epochs': 1, 'rare_min_count': 25}
