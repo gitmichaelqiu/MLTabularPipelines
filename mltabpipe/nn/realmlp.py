@@ -1,13 +1,15 @@
 import time
 import numpy as np
 import pandas as pd
-from mltabpipe.core.common import StratifiedKFold, KFold, roc_auc_score, get_eval_score
+from sklearn.model_selection import StratifiedKFold, KFold
 
 try:
     from pytabkit.models.sklearn.sklearn_interfaces import RealMLP_TD_Classifier, RealMLP_TD_Regressor
     PYTABKIT_AVAILABLE = True
 except ImportError:
     PYTABKIT_AVAILABLE = False
+
+from mltabpipe.core.common import get_eval_score
 
 def train_realmlp_model(
     train_df: pd.DataFrame, 
@@ -49,8 +51,6 @@ def train_realmlp_model(
             kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
             
         for fold, (train_idx, val_idx) in enumerate(kf.split(X, y)):
-            print(f"Fold {fold + 1}/{n_folds}")
-            
             X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
             X_val, y_val = X.iloc[val_idx], y.iloc[val_idx]
             
@@ -73,7 +73,6 @@ def train_realmlp_model(
             
             fold_score = get_eval_score(y_val, val_preds, task)
             all_metrics.append(fold_score)
-            print(f"Fold {fold + 1} Score: {fold_score:.5f}")
             
     overall_score = get_eval_score(y, oof_preds, task)
     print(f"Overall OOF Score (Ensembled): {overall_score:.5f}")

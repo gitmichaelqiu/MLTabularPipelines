@@ -1,13 +1,15 @@
 import time
 import numpy as np
 import pandas as pd
-from mltabpipe.core.common import StratifiedKFold, KFold, roc_auc_score, get_eval_score
+from sklearn.model_selection import StratifiedKFold, KFold
 
 try:
     from pytabkit.models.sklearn.sklearn_interfaces import TabM_TD_Classifier, TabM_TD_Regressor
     PYTABKIT_AVAILABLE = True
 except ImportError:
     PYTABKIT_AVAILABLE = False
+
+from mltabpipe.core.common import get_eval_score
 
 def train_tabm_model(
     train_df: pd.DataFrame, 

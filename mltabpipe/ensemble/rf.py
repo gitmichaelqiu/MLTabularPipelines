@@ -1,7 +1,7 @@
 import time
 import numpy as np
 import pandas as pd
-from mltabpipe.core.common import StratifiedKFold, KFold, roc_auc_score, get_eval_score
+from sklearn.model_selection import StratifiedKFold, KFold
 
 try:
     import cuml
@@ -10,6 +10,8 @@ try:
 except ImportError:
     from sklearn.ensemble import RandomForestClassifier as skRFClassifier, RandomForestRegressor as skRFRegressor
     CUML_AVAILABLE = False
+
+from mltabpipe.core.common import get_eval_score
 
 def train_rf_model(
     train_df: pd.DataFrame, 

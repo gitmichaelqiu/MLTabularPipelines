@@ -1,12 +1,31 @@
-import optuna
-import lightgbm as lgb
-import xgboost as xgb
-from mltabpipe.core.common import (
-    pd, np, plt, sns, 
-    StratifiedKFold, KFold, train_test_split, 
-    roc_auc_score, get_eval_score
-)
-from catboost import CatBoostClassifier, CatBoostRegressor, Pool
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import StratifiedKFold, KFold, train_test_split
+
+try:
+    import optuna
+    OPTUNA_AVAILABLE = True
+except ImportError:
+    OPTUNA_AVAILABLE = False
+
+try:
+    import xgboost as xgb
+except ImportError:
+    xgb = None
+
+try:
+    import lightgbm as lgb
+except ImportError:
+    lgb = None
+
+try:
+    from catboost import CatBoostClassifier, CatBoostRegressor, Pool
+except ImportError:
+    CatBoostClassifier = None
+
+from mltabpipe.core.common import roc_auc_score, get_eval_score
 
 def train_xgb_model(
     train_df: pd.DataFrame, 
@@ -21,6 +40,9 @@ def train_xgb_model(
     """
     Trains an XGBoost model using Cross Validation with Seed Ensembling.
     """
+    if xgb is None:
+        raise ImportError("XGBoost is not installed. Please run 'pip install xgboost'.")
+
     if isinstance(random_states, int):
         random_states = [random_states]
 
@@ -77,6 +99,9 @@ def train_lgbm_model(
     """
     Trains a LightGBM model using Cross Validation with Seed Ensembling.
     """
+    if lgb is None:
+        raise ImportError("LightGBM is not installed. Please run 'pip install lightgbm'.")
+
     if isinstance(random_states, int):
         random_states = [random_states]
 
@@ -137,6 +162,9 @@ def train_cb_model(
     """
     Trains a CatBoost model using Cross Validation with Seed Ensembling.
     """
+    if CatBoostClassifier is None:
+        raise ImportError("CatBoost is not installed. Please run 'pip install catboost'.")
+
     if isinstance(random_states, int):
         random_states = [random_states]
 
@@ -187,6 +215,11 @@ def tune_xgb_hyperparameters(train_df, features, target_col, task='classificatio
     """
     Optuna Hyperparameter tuning for XGBoost.
     """
+    if not OPTUNA_AVAILABLE:
+        raise ImportError("Optuna is required for hyperparameter tuning. Please install it via 'pip install optuna'.")
+    if xgb is None:
+        raise ImportError("XGBoost is not installed.")
+
     def objective(trial):
         params = {
             'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
@@ -222,6 +255,11 @@ def tune_lgbm_hyperparameters(train_df, features, target_col, task='classificati
     """
     Optuna Hyperparameter tuning for LightGBM.
     """
+    if not OPTUNA_AVAILABLE:
+        raise ImportError("Optuna is required for hyperparameter tuning. Please install it via 'pip install optuna'.")
+    if lgb is None:
+        raise ImportError("LightGBM is not installed.")
+
     def objective(trial):
         params = {
             'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
@@ -233,7 +271,6 @@ def tune_lgbm_hyperparameters(train_df, features, target_col, task='classificati
             'boosting_type': boosting_type
         }
         
-        # Quick Evaluation using a simple train_test_split (or 3-fold CV for speed)
         X_train, X_val, y_train, y_val = train_test_split(
             train_df[features], train_df[target_col], test_size=0.2, random_state=42
         )
@@ -249,7 +286,6 @@ def tune_lgbm_hyperparameters(train_df, features, target_col, task='classificati
         preds = model.predict_proba(X_val)[:, 1] if task == 'classification' else model.predict(X_val)
         return get_eval_score(y_val, preds, task)
 
-    # Optuna needs to know whether to maximize (AUC) or minimize (RMSE)
     direction = 'maximize' if task == 'classification' else 'minimize'
     study = optuna.create_study(direction=direction)
     study.optimize(objective, n_trials=n_trials)
@@ -258,6 +294,11 @@ def tune_lgbm_hyperparameters(train_df, features, target_col, task='classificati
     return study.best_trial.params
 
 def tune_cb_hyperparameters(train_df, features, target_col, task='classification', n_trials=20):
+    if not OPTUNA_AVAILABLE:
+        raise ImportError("Optuna is required for hyperparameter tuning. Please install it via 'pip install optuna'.")
+    if CatBoostClassifier is None:
+        raise ImportError("CatBoost is not installed.")
+
     def objective(trial):
         params = {
             'iterations': trial.suggest_int('iterations', 100, 1000),
@@ -277,6 +318,7 @@ def tune_cb_hyperparameters(train_df, features, target_col, task='classification
         model.fit(train_pool, eval_set=val_pool)
         preds = model.predict_proba(val_pool)[:, 1] if task == 'classification' else model.predict(val_pool)
         return get_eval_score(y_vl, preds, task)
+
     direction = 'maximize' if task == 'classification' else 'minimize'
     study = optuna.create_study(direction=direction)
     study.optimize(objective, n_trials=n_trials)

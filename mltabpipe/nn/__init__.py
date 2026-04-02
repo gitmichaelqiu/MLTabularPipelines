@@ -7,4 +7,3 @@ from .deepfm import train_deepfm_model
 from .ffm import train_ffm_model
 from .trompt import train_trompt_model
 from .dae import train_dae_and_extract_features as train_dae_model
-from .te_logit import train_te_logit_model

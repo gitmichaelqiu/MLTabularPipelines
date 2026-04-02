@@ -1,11 +1,13 @@
-import time
-import warnings
-from mltabpipe.core.common import np, pd, StratifiedKFold, KFold, get_eval_score
+import numpy as np
+import pandas as pd
 
 try:
     import ydf
+    YDF_AVAILABLE = True
 except ImportError:
-    pass
+    YDF_AVAILABLE = False
+
+from mltabpipe.core.common import get_eval_score
 
 def train_ydf_model(
     train_df: pd.DataFrame, 
@@ -13,91 +15,58 @@ def train_ydf_model(
     features: list, 
     target_col: str, 
     params: dict = None, 
-    task: str = 'classification',
-    n_folds: int = 5, 
-    random_states: list = [42]
+    task: str = 'classification'
 ):
     """
-    Trains a Yggdrasil Decision Forests (YDF) Gradient Boosted Trees model with Seed Ensembling.
-    YDF handles categorical variables and missing values natively.
+    Trains a Yggdrasil Decision Forests (YDF) model.
+    YDF handles its own CV and validation internally if configured, 
+    but we can also use a simple train/test or OOF extraction.
     """
+    if not YDF_AVAILABLE:
+        raise ImportError("YDF is not installed. Please run 'pip install ydf'.")
+
     if params is None:
         params = {
-            'shrinkage': 0.1,
-            'early_stopping_num_trees_look_ahead': 300,
-            'max_depth': 2,
-            'growing_strategy': 'BEST_FIRST_GLOBAL',
-            'categorical_algorithm': 'RANDOM',
-            'num_trees': 10000,
+            'num_trees': 500,
+            'max_depth': 12,
         }
-        
-    if isinstance(random_states, int):
-        random_states = [random_states]
 
-    print(f"--- Training YDF Model ({task}) with {len(random_states)} seeds ---")
+    print(f"--- Training YDF Model ({task}) ---")
     
-    # Suppress verbose YDF C++ engine outputs for a clean notebook
-    try:
-        ydf.verbose(0)
-    except:
-        pass
-    warnings.filterwarnings('ignore')
-    
-    # Map our task string to the YDF Task Enum
+    # YDF likes its own task definition
     ydf_task = ydf.Task.CLASSIFICATION if task == 'classification' else ydf.Task.REGRESSION
     
-    # YDF requires the target column to be passed inside the model parameters
-    learner_params = params.copy()
-    learner_params['label'] = target_col
-    learner_params['task'] = ydf_task
+    # Create the learner
+    # Random Forest is a good default for YDF
+    learner = ydf.RandomForestLearner(label=target_col, task=ydf_task, **params)
     
-    oof_preds = np.zeros(len(train_df), dtype=np.float32)
-    test_preds = np.zeros(len(test_df), dtype=np.float32)
-    all_metrics = []
+    # Training
+    model = learner.train(train_df[features + [target_col]])
     
-    # YDF expects the label column to be inside the DataFrame during training
-    train_cols = features + [target_col]
-    test_df_feats = test_df[features].copy()
-
-    for seed in random_states:
-        print(f"Seed {seed}")
+    # OOF Predictions
+    # YDF can provide OOF predictions for Random Forest learners
+    try:
+        oof_preds = model.out_of_fold_predictions()
         if task == 'classification':
-            kf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+            # For binary, it returns probabilities for all classes
+            # We assume binary for now and take the positive class (usually index 1)
+            oof_preds = oof_preds[:, 1]
+    except Exception:
+        print("Warning: Could not extract OOF predictions from YDF model. Using in-sample (biased) predictions.")
+        # Fallback to in-sample (not ideal, but YDF RF usually has OOF)
+        if task == 'classification':
+            oof_preds = model.predict(train_df[features])[:, 1]
         else:
-            kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
-            
-        for fold, (tr_idx, va_idx) in enumerate(kf.split(train_df[features], train_df[target_col])):
-            fold_t0 = time.time()
-            print(f"Fold {fold + 1}/{n_folds}")
-            
-            # Slicing the dataframes for this fold
-            tr_df = train_df.iloc[tr_idx][train_cols]
-            va_df = train_df.iloc[va_idx][train_cols]
-            y_va = train_df.iloc[va_idx][target_col]
-            
-            # Initialize and Train
-            lp = learner_params.copy()
-            lp['random_state'] = seed
-            learner = ydf.GradientBoostedTreesLearner(**lp)
-            model = learner.train(tr_df, valid=va_df) 
-            
-            # For classification, YDF predict() returns 1D array of positive class probabilities natively
-            val_preds = model.predict(va_df[features])
-            test_fold_preds = model.predict(test_df_feats)
-            
-            oof_preds[va_idx] += val_preds / len(random_states)
-            test_preds += (test_fold_preds / n_folds) / len(random_states)
-            
-            # Calculate metric
-            fold_score = get_eval_score(y_va, val_preds, task)
-            all_metrics.append(fold_score)
-            
-            metric_name = "ROC AUC" if task == 'classification' else "RMSE"
-            print(f"Fold {fold + 1} {metric_name}: {fold_score:.5f} | Time: {time.time()-fold_t0:.1f}s")
-        
-    overall_score = get_eval_score(train_df[target_col], oof_preds, task)
-    metric_name = "ROC AUC" if task == 'classification' else "RMSE"
-    print(f"Overall OOF {metric_name} (Ensembled): {overall_score:.5f}")
-    print("-" * 30)
-    
-    return oof_preds, test_preds, all_metrics
+            oof_preds = model.predict(train_df[features])
+
+    # Test Predictions
+    test_preds = model.predict(test_df[features])
+    if task == 'classification':
+        test_preds = test_preds[:, 1]
+
+    # Scoring
+    y_true = train_df[target_col].values
+    score = get_eval_score(y_true, oof_preds, task)
+    print(f"YDF Overall Score: {score:.5f}")
+
+    return oof_preds, test_preds

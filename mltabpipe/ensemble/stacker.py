@@ -1,14 +1,16 @@
 import numpy as np
 import pandas as pd
-from mltabpipe.core.common import StratifiedKFold, KFold, roc_auc_score, get_eval_score
+from sklearn.model_selection import StratifiedKFold, KFold
+from sklearn.linear_model import LogisticRegression as skLogReg, Ridge as skRidge
 
 try:
     import cuml
     from cuml.linear_model import LogisticRegression as cuLogReg, Ridge as cuRidge
     CUML_AVAILABLE = True
 except ImportError:
-    from sklearn.linear_model import LogisticRegression as skLogReg, Ridge as skRidge
     CUML_AVAILABLE = False
+
+from mltabpipe.core.common import get_eval_score
 
 def train_stacker(
     train_df: pd.DataFrame, 
@@ -53,6 +55,7 @@ def train_stacker(
             if CUML_AVAILABLE:
                 model = cuLogReg(penalty='l2', **params)
             else:
+                # Use sklearn solver as fallback
                 model = skLogReg(penalty='l2', **params, solver='lbfgs')
             model.fit(X_tr, y_tr)
             val_preds = model.predict_proba(X_va)[:, 1]

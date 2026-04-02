@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader, Dataset
-from mltabpipe.core.common import StandardScaler
+from sklearn.preprocessing import StandardScaler
 
 DEVICE = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -66,8 +66,6 @@ class DAEDataset(Dataset):
 
     def __getitem__(self, idx):
         x = self.x_original[idx]
-        # On-the-fly swap noise for this row is hard with Dataset, 
-        # usually easier to pre-calculate or do it per-batch.
         return x
 
 def train_dae_and_extract_features(
@@ -114,14 +112,8 @@ def train_dae_and_extract_features(
         for x_orig in dl:
             x_orig = x_orig.to(DEVICE)
             
-            # Apply swap noise to the batch
-            x_noisy = x_orig.clone()
-            n_batch, n_feat = x_orig.shape
-            mask = torch.rand(x_orig.shape) < params['noise_level']
-            mask = mask.to(DEVICE)
-            
-            # Simple noise for demonstration: Gaussian or masking
-            # Real swap noise is better done on CPU pre-batching
+            # Apply simple Gaussian noise for demonstration
+            mask = (torch.rand(x_orig.shape) < params['noise_level']).to(DEVICE)
             x_noisy = x_orig + torch.randn_like(x_orig) * 0.1 * mask
             
             optimizer.zero_grad()
@@ -138,6 +130,7 @@ def train_dae_and_extract_features(
     model.eval()
     print("Extracting DAE Features...")
     with torch.no_grad():
+        # Pre-scale/move to device if it fits, else use DataLoader for extraction
         x_train_tensor = torch.tensor(X_train_scaled, dtype=torch.float32).to(DEVICE)
         x_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32).to(DEVICE)
         
@@ -147,7 +140,7 @@ def train_dae_and_extract_features(
     train_dae_feats = train_features.cpu().numpy()
     test_dae_feats = test_features.cpu().numpy()
     
-    # Return as DataFrames or arrays
+    # Return as DataFrames
     feat_names = [f"dae_feat_{i}" for i in range(train_dae_feats.shape[1])]
     df_train_dae = pd.DataFrame(train_dae_feats, columns=feat_names)
     df_test_dae = pd.DataFrame(test_dae_feats, columns=feat_names)
