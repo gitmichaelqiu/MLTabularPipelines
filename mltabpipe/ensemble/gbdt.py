@@ -314,7 +314,9 @@ def tune_xgb_hyperparameters(train_df, features, target_col, task='classificatio
         else:
             preds = model.predict_proba(X_val) if task == 'classification' else model.predict(X_val)
             
-        return get_eval_score(y_val, preds, task)
+        score = get_eval_score(y_val, preds, task)
+        print(f"  Trial {trial.number} | Score: {score:.5f}")
+        return score
 
     direction = 'maximize' if task == 'classification' else 'minimize'
     study = optuna.create_study(direction=direction)
@@ -361,7 +363,9 @@ def tune_lgbm_hyperparameters(train_df, features, target_col, task='classificati
         else:
             preds = model.predict_proba(X_val) if task == 'classification' else model.predict(X_val)
             
-        return get_eval_score(y_val, preds, task)
+        score = get_eval_score(y_val, preds, task)
+        print(f"  Trial {trial.number} | Score: {score:.5f}")
+        return score
 
     direction = 'maximize' if task == 'classification' else 'minimize'
     study = optuna.create_study(direction=direction)
@@ -400,7 +404,9 @@ def tune_cb_hyperparameters(train_df, features, target_col, task='classification
         else:
             preds = model.predict_proba(val_pool) if task == 'classification' else model.predict(val_pool)
             
-        return get_eval_score(y_vl, preds, task)
+        score = get_eval_score(y_vl, preds, task)
+        print(f"  Trial {trial.number} | Score: {score:.5f}")
+        return score
 
     direction = 'maximize' if task == 'classification' else 'minimize'
     study = optuna.create_study(direction=direction)
