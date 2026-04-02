@@ -14,22 +14,6 @@ except ImportError:
     TargetEncoder = None
 from sklearn.linear_model import LogisticRegression
 
-def get_torch_device():
-    """Returns 'cuda' if available, otherwise 'cpu'."""
-    try:
-        import torch
-        return 'cuda' if torch.cuda.is_available() else 'cpu'
-    except ImportError:
-        return 'cpu'
-
-def is_cuml_available():
-    """Checks if RAPIDS cuML is installed and compatible."""
-    try:
-        import cuml
-        return True
-    except ImportError:
-        return False
-
 def get_eval_score(y_true, y_pred, task):
     """Helper function to calculate the evaluation metric based on the task."""
     try:

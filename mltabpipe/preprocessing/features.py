@@ -128,6 +128,66 @@ def add_flag_counts(df, cols, flag_value=1, name="flag_count"):
     df[name] = (df[available_cols] == flag_value).sum(axis=1)
     return df
 
+def add_categorical_interactions(df, pairs):
+    """
+    Combine pairs of categorical columns into new interactive categories.
+    'pairs' should be a list of tuples: (col1, col2, new_name)
+    """
+    df = df.copy()
+    if not pairs:
+        return df
+
+    print(f"--- Creating {len(pairs)} categorical interactions ---")
+    for col1, col2, name in pairs:
+        if col1 not in df.columns or col2 not in df.columns:
+            continue
+        
+        # Combine as strings with a separator
+        df[name] = df[col1].astype(str) + "_" + df[col2].astype(str)
+        # Convert to category type for memory efficiency
+        df[name] = df[name].astype('category')
+        
+    return df
+
+def add_nearest_neighbor_features(df, original_df, cols, target_col, k=1):
+    """
+    Use cKDTree to find nearest neighbors in original dataset and attach their target labels. 
+    Provides a low-leakage 'ground truth' anchor.
+    """
+    df = df.copy()
+    if not cols:
+        return df
+
+    print(f"--- Nearest Neighbor lookup (k={k}) using {len(cols)} columns ---")
+    
+    # Standardize data for KDTree (essential for meaningful distance)
+    # Using simple min-max or standard scaling on the fly
+    train_vals = original_df[cols].fillna(0).values
+    test_vals = df[cols].fillna(0).values
+    
+    # Simple Standardization
+    mu = train_vals.mean(axis=0)
+    sigma = train_vals.std(axis=0) + 1e-9
+    
+    train_std = (train_vals - mu) / sigma
+    test_std = (test_vals - mu) / sigma
+    
+    # Fit Tree
+    tree = cKDTree(train_std)
+    dist, idx = tree.query(test_std, k=k)
+    
+    # Attach labels
+    if k == 1:
+        df[f"nn_{target_col}"] = original_df[target_col].iloc[idx].values
+        df[f"nn_dist"] = dist
+    else:
+        # For k > 1, we could do mean/mode, but simple distance is a good baseline
+        for i in range(k):
+            df[f"nn_{target_col}_{i}"] = original_df[target_col].iloc[idx[:, i]].values
+            df[f"nn_dist_{i}"] = dist[:, i]
+            
+    return df
+
 def add_frequency_encoding(df, cols):
     """
     Add frequency encoding (normalized counts).
@@ -154,6 +214,9 @@ def apply_modular_pipeline(df, config, original_df=None):
 
     if 'digit_cols' in config:
         df = add_digit_features(df, config['digit_cols'])
+
+    if 'cat_interactions' in config:
+        df = add_categorical_interactions(df, config['cat_interactions'])
         
     if 'snap_cols' in config and original_df is not None:
         df = add_snap_features(df, original_df, config['snap_cols'])
@@ -171,6 +234,15 @@ def apply_modular_pipeline(df, config, original_df=None):
             
     if 'freq_cols' in config:
         df = add_frequency_encoding(df, config['freq_cols'])
+        
+    if 'nn_config' in config and original_df is not None:
+        nn_cfg = config['nn_config']
+        df = add_nearest_neighbor_features(
+            df, original_df, 
+            nn_cfg['cols'], 
+            nn_cfg['target_col'], 
+            nn_cfg.get('k', 1)
+        )
         
     final_cols = len(df.columns)
     print(f"--- Modular Pipeline Completed. Features: {initial_cols} -> {final_cols} (+{final_cols - initial_cols}) ---")

@@ -8,7 +8,7 @@ try:
 except ImportError:
     LIGHTAUTOML_AVAILABLE = False
 
-from mltabpipe.core.common import get_eval_score, get_torch_device
+from mltabpipe.core.common import get_eval_score
 
 def train_lama_model(
     train_df: pd.DataFrame, 
@@ -50,16 +50,10 @@ def train_lama_model(
     
     # Initialize LAMA
     # redundant n_jobs removed from reader_params as it's handled by cpu_limit
-    
-    # GPU detection
-    device = get_torch_device()
-    gpu_ids = '0' if device == 'cuda' else None
-    
     automl = TabularAutoML(
         task=lama_task, 
         timeout=timeout,
         cpu_limit=cpu_limit,
-        gpu_ids=gpu_ids,
         general_params={'use_algos': [['lgb', 'cb', 'linear_l2']]},
         reader_params={'cv': 5, 'random_state': 42} 
     )

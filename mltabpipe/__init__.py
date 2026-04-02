@@ -36,6 +36,8 @@ from .preprocessing import (
     add_binning_features,
     add_flag_counts,
     add_frequency_encoding,
+    add_categorical_interactions,
+    add_nested_target_encoding,
     apply_modular_pipeline
 )
 
