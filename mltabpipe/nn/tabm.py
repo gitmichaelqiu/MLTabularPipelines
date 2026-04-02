@@ -9,7 +9,7 @@ try:
 except ImportError:
     PYTABKIT_AVAILABLE = False
 
-from mltabpipe.core.common import get_eval_score
+from mltabpipe.core.common import get_eval_score, get_torch_device
 
 def train_tabm_model(
     train_df: pd.DataFrame, 
@@ -29,6 +29,11 @@ def train_tabm_model(
 
     if params is None:
         params = {} # Using Tuned Defaults (TD) by default
+    
+    # Auto-detect device
+    device = get_torch_device()
+    if 'device' not in params:
+        params['device'] = device
 
     if isinstance(random_states, int):
         random_states = [random_states]
