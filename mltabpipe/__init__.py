@@ -11,7 +11,7 @@ from .ensemble import (
 
 from .core.update_checker import check_for_updates
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 check_for_updates(__version__)
 
 from .nn import (
