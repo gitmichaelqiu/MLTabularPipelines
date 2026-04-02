@@ -50,15 +50,17 @@ def train_xgb_model(
     print(f"--- Training XGB Model ({task}) with {len(random_states)} seeds ---")
     
     # Detect n_classes
-    n_classes = train_df[target_col].nunique()
+    vals = train_df[target_col].dropna().unique()
+    n_classes = len(vals)
     is_multiclass = (task == 'classification' and n_classes > 2)
 
-    # Initialize OOF and test predictions
-    # Multiclass requires (N, n_classes), binary (N,)
     if is_multiclass:
+        print(f"  Detected multiclass task ({n_classes} classes). Predictions will be shape (N, {n_classes}).")
         oof_preds = np.zeros((len(train_df), n_classes))
         test_preds = np.zeros((len(test_df), n_classes))
     else:
+        if task == 'classification':
+             print(f"  Detected binary task. Predictions will be shape (N,).")
         oof_preds = np.zeros(len(train_df))
         test_preds = np.zeros(len(test_df))
     
@@ -129,13 +131,18 @@ def train_lgbm_model(
 
     print(f"--- Training LGBM Model ({task}) with {boosting_type} and {len(random_states)} seeds ---")
     
-    n_classes = train_df[target_col].nunique()
+    # Detect n_classes
+    vals = train_df[target_col].dropna().unique()
+    n_classes = len(vals)
     is_multiclass = (task == 'classification' and n_classes > 2)
 
     if is_multiclass:
+        print(f"  Detected multiclass task ({n_classes} classes). Predictions will be shape (N, {n_classes}).")
         oof_preds = np.zeros((len(train_df), n_classes))
         test_preds = np.zeros((len(test_df), n_classes))
     else:
+        if task == 'classification':
+             print(f"  Detected binary task. Predictions will be shape (N,).")
         oof_preds = np.zeros(len(train_df))
         test_preds = np.zeros(len(test_df))
     
@@ -208,13 +215,18 @@ def train_cb_model(
 
     print(f"--- Training CB Model ({task}) with {len(random_states)} seeds ---")
     
-    n_classes = train_df[target_col].nunique()
+    # Detect n_classes
+    vals = train_df[target_col].dropna().unique()
+    n_classes = len(vals)
     is_multiclass = (task == 'classification' and n_classes > 2)
 
     if is_multiclass:
+        print(f"  Detected multiclass task ({n_classes} classes). Predictions will be shape (N, {n_classes}).")
         oof_preds = np.zeros((len(train_df), n_classes))
         test_preds = np.zeros((len(test_df), n_classes))
     else:
+        if task == 'classification':
+             print(f"  Detected binary task. Predictions will be shape (N,).")
         oof_preds = np.zeros(len(train_df))
         test_preds = np.zeros(len(test_df))
     
