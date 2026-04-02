@@ -74,8 +74,10 @@ def train_stacker(
             if CUML_AVAILABLE:
                 model = cuLogReg(penalty='l2', **params)
             else:
-                # Use sklearn solver as fallback
-                model = skLogReg(penalty='l2', **params, solver='lbfgs', multi_class='auto')
+                # Use sklearn solver as fallback. 
+                # Note: 'multi_class' is deprecated/removed in recent sklearn; 
+                # the model now handles it automatically based on 'y'.
+                model = skLogReg(penalty='l2', **params, solver='lbfgs')
             model.fit(X_tr, y_tr)
             
             if is_multiclass:
